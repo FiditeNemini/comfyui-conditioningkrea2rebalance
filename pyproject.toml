@@ -28,8 +28,8 @@ Documentation = "https://github.com/nova452/ComfyUI-ConditioningKrea2Rebalance/w
 "Bug Tracker" = "https://github.com/nova452/ComfyUI-ConditioningKrea2Rebalance/issues"
 
 [tool.comfy]
-PublisherId = ""
-DisplayName = "ComfyUI-ConditioningKrea2Rebalance"
+PublisherId = "nova452"
+DisplayName = "ComfyUI-Conditioning-Rebalance"
 Icon = ""
 includes = [] 
 # "requires-comfyui" = ">=1.0.0"  # ComfyUI version compatibility
