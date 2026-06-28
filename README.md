@@ -15,4 +15,3 @@ New set of conditioning optimizer nodes with per layer weighting that offer IP-A
 ```bash
 git clone https://github.com/nova452/ComfyUI-ConditioningKrea2Rebalance.git
 ```
-https://github.com/nova452/ComfyUI-Conditioning-Rebalance/blob/main/krea2_image_edit_workflow.json
