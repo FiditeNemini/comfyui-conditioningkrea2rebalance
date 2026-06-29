@@ -7,9 +7,6 @@
 
 [workflow.json](https://github.com/nova452/ComfyUI-Conditioning-Rebalance/blob/main/krea2_image_edit_workflow.json)
 
-# Basic Advanced Setup Example
-<img width="3713" height="1432" alt="Screenshot (565)" src="https://github.com/user-attachments/assets/f9101b17-a9bf-4b08-8478-787bf1808bcc" />
-
 # ComfyUI-Conditioning-Rebalance
 New set of conditioning optimizer nodes with per layer weighting that offer IP-Adapter-like features for Krea 2 along with bypassing the built in quality diluation from the trained safety filter and also works as a means to unfilter the model.
 
