@@ -261,7 +261,7 @@ class ConditioningKrea2Rebalance:
 
     def main(self, conditioning, multiplier, per_layer_weights=None):
         plw = _parse_floats(per_layer_weights) if per_layer_weights else None
-        c = scale_conditioning(conditioning, multiplier, per_layer_weights=plw)
+        c = scale_conditioning(conditioning, multiplier, weights=plw)
         return (c,)
 
 
