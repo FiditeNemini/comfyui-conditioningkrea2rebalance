@@ -103,6 +103,8 @@ class Ideogram4EditRebalance:
 
     RETURN_TYPES = ("CONDITIONING",)
     RETURN_NAMES = ("conditioning",)
+
+    OUTPUT_IS_LIST = (True,)
     FUNCTION = "main"
     CATEGORY = "conditioning"
 
@@ -145,6 +147,18 @@ class Ideogram4EditRebalance:
             return ("tensor", tuple(image.shape))
         return ("unknown",)
 
+    @staticmethod
+    def _list_index():
+        """Comfy list-map index for this invocation, or None."""
+        try:
+            from comfy_execution.utils import get_executing_context
+            ctx = get_executing_context()
+            if ctx is None:
+                return None
+            return ctx.list_index
+        except Exception:
+            return None
+
     def main(self, text, clip,
              steering=1.0,
              layer_multiplier=1.0,
@@ -156,6 +170,11 @@ class Ideogram4EditRebalance:
              image4=None, image4_tokens="normal"):
         if not _COMFY_AVAILABLE:
             raise RuntimeError("Ideogram 4 Edit requires ComfyUI (comfy.utils, node_helpers).")
+
+
+        list_index = self._list_index()
+        if list_index is not None and list_index > 0:
+            return ([],)
 
         match_percent = 0.8
 
@@ -227,7 +246,7 @@ class Ideogram4EditRebalance:
 
         if not guidance_passes:
             final = compile_edit_ideogram4(clip, prompt, None)
-            return (final,)
+            return ([final],)
 
         if len(guidance_passes) == 1:
             merged = guidance_passes[0]
@@ -245,7 +264,7 @@ class Ideogram4EditRebalance:
                 "gradual", 8,
             )[0]
 
-        return (merged,)
+        return ([merged],)
 
 
 class Ideogram4EncodeRebalance:
