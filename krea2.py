@@ -7,6 +7,8 @@ from .conditioning_rebalance import (
     compile_edit,
     guidance,
     refocus,
+    merge_conditioning_anchor,
+    merge_conditioning_multi,
     _align_prompt,
 )
 
@@ -74,108 +76,6 @@ class ConditioningKrea2Rebalance:
         return (c,)
 
 
-class Krea2EditRebalance:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {
-            "text": ("STRING", {"multiline": True, "dynamicPrompts": True}),
-            "clip": ("CLIP",),
-        },
-        "optional": {
-            "negative": ("STRING", {"forceInput": True}),
-            "image1": ("IMAGE",),
-            "image1_tokens": (["low", "normal", "high", "max"], {"default": "normal"}),
-            "image2": ("IMAGE",),
-            "image2_tokens": (["low", "normal", "high", "max"], {"default": "normal"}),
-            "image3": ("IMAGE",),
-            "image3_tokens": (["low", "normal", "high", "max"], {"default": "normal"}),
-            "image4": ("IMAGE",),
-            "image4_tokens": (["low", "normal", "high", "max"], {"default": "normal"}),
-        }}
-
-    RETURN_TYPES = ("CONDITIONING",)
-    RETURN_NAMES = ("conditioning",)
-    FUNCTION = "main"
-    CATEGORY = "conditioning"
-
-    @staticmethod
-    def _process_cond(cond_main, cond_ref, refocus_strength=1.00, guidance_strength=1.000):
-        cond_ref = refocus(
-            cond_ref, refocus_strength, "1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0",
-        )
-        cond_main = refocus(
-            cond_main, refocus_strength, "0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,12.0,0.0,0.0,0.0",
-        )
-        return guidance(cond_main, cond_ref, guidance_strength)
-
-    def main(self, text, clip, refocus_strength=1.00, guidance_strength=1.000,
-             negative=None,
-             image1=None, image1_tokens="normal",
-             image2=None, image2_tokens="normal",
-             image3=None, image3_tokens="normal",
-             image4=None, image4_tokens="normal"):
-        if not _COMFY_AVAILABLE:
-            raise RuntimeError("Krea 2 Edit requires ComfyUI (comfy.utils, node_helpers).")
-
-        safe = _align_prompt(text)
-        prompt_main = "" + safe
-        ref_prefix = negative if negative is not None and str(negative) != "" else ""
-        prompt_ref = str(ref_prefix) + ""
-
-        images_with_size = [
-            (image1, image1_tokens),
-            (image2, image2_tokens),
-            (image3, image3_tokens),
-            (image4, image4_tokens),
-        ]
-        has_image = any(img is not None for img, _ in images_with_size)
-
-        cond_raw = compile_edit_krea2(clip, prompt_main, None)
-
-        if has_image:
-            cond_image_main = compile_edit_krea2(clip, prompt_main, images_with_size)
-            cond_image_ref = compile_edit_krea2(clip, prompt_ref, images_with_size)
-
-            # compile the main cond with the subject layer before the 1st process (apply selective emphasis)
-            cond_image_main = refocus(
-                cond_image_main, 1.0,
-                "0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,12.0,0.0,0.0,0.0",
-            )
-
-            # unfocus the subject on ref
-            cond_image_ref = refocus(
-                cond_image_ref, 1.0,
-                "1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0",
-            )
-
-            # 1st process: subject vs outlier guidance
-            first = guidance(cond_image_main, cond_image_ref, guidance_strength)
-
-            # post process: re-refocus the subject layer, multiplier 1
-            compiled = refocus(
-                first, 1.0,
-                "0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,12.0,0.0,0.0,0.0",
-            )
-
-            # 2: guider (unconditional vs compiled)
-            second = guidance(cond_raw, compiled, -0.5)
-
-            # 3: guider (first pipe vs second)
-            third = guidance(first, second, -0.5)
-
-            # step 4: custom Rebalance CFG with fixed schedules
-            final = core.RebalanceCFG().main(
-                cond_raw, third,
-                "0.000-0.200:1.00;",
-                "0.200-0.750:0.80; 0.750-0.875:1.40; 0.875-1.000:20.50",
-                "gradual", 8,
-            )[0]
-        else:
-            final = cond_raw
-
-        return (final,)
-
-
 class Krea2EncodeRebalance:
 
     @classmethod
@@ -221,6 +121,186 @@ class Krea2EncodeRebalance:
         final = compile_edit_krea2(clip, prompt, images_with_size if has_image else None)
 
         return (final,)
+
+
+class Krea2EditRebalance:
+
+    DEFAULT_MAIN_WEIGHTS = "0,0,0,0,0,0,0,0,12,0,0,0"
+    DEFAULT_REF_WEIGHTS = "1.0909,1.0909,1.0909,1.0909,1.0909,1.0909,1.0909,1.0909,0,1.0909,1.0909,1.0909"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "text": ("STRING", {"multiline": True, "dynamicPrompts": True}),
+            "clip": ("CLIP",),
+            "steering": ("FLOAT", {"default": 1.0, "min": -2.0, "max": 2.0, "step": 0.01}),
+            "layer_multiplier": ("FLOAT", {"default": 1.0, "min": -1000000000.0, "max": 1000000000.0, "step": 0.01}),
+            "enable_step": ("BOOLEAN", {"default": True}),
+        }, "optional": {
+            "image1": ("IMAGE",),
+            "image1_tokens": (["low", "normal", "high", "max"], {"default": "normal"}),
+            "image2": ("IMAGE",),
+            "image2_tokens": (["low", "normal", "high", "max"], {"default": "normal"}),
+            "image3": ("IMAGE",),
+            "image3_tokens": (["low", "normal", "high", "max"], {"default": "normal"}),
+            "image4": ("IMAGE",),
+            "image4_tokens": (["low", "normal", "high", "max"], {"default": "normal"}),
+        }}
+
+    RETURN_TYPES = ("CONDITIONING",)
+    RETURN_NAMES = ("conditioning",)
+    FUNCTION = "main"
+    CATEGORY = "conditioning"
+
+    @staticmethod
+    def _batch_len(image):
+        """Return the batch length of an image tensor or list (0 if None)."""
+        if image is None:
+            return 0
+        # List of image tensors (e.g. from LoadImages output list)
+        if isinstance(image, list):
+            return len(image)
+        if hasattr(image, "shape") and len(image.shape) >= 4:
+            return int(image.shape[0])
+        if hasattr(image, "shape") and len(image.shape) == 3:
+            return 1
+        return 1
+
+    @staticmethod
+    def _slice_image(image, idx):
+        """Return the idx-th frame of an image tensor/list, keeping a batch dim."""
+        if image is None:
+            return None
+        if isinstance(image, list):
+            item = image[idx]
+            # Ensure a batch dimension
+            if hasattr(item, "shape") and len(item.shape) == 3:
+                return item.unsqueeze(0)
+            return item
+        if len(image.shape) >= 4:
+            return image[idx:idx + 1]
+        return image
+
+    @staticmethod
+    def _image_signature(image):
+        """Cheap signature for caching: shape + a few sampled values."""
+        if image is None:
+            return ("none",)
+        if isinstance(image, list):
+            return ("list", len(image),
+                    tuple(img.shape for img in image if hasattr(img, "shape")))
+        if hasattr(image, "shape"):
+            return ("tensor", tuple(image.shape))
+        return ("unknown",)
+
+    def main(self, text, clip,
+             steering=1.0,
+             layer_multiplier=1.0,
+             enable_step=True,
+             negative=None, anchor=None,
+             image1=None, image1_tokens="normal",
+             image2=None, image2_tokens="normal",
+             image3=None, image3_tokens="normal",
+             image4=None, image4_tokens="normal"):
+        if not _COMFY_AVAILABLE:
+            raise RuntimeError("Krea 2 Encode requires ComfyUI (comfy.utils, node_helpers).")
+
+        match_percent = 0.8
+
+        prompt = "" + _align_prompt(text)
+        ref_prefix = negative if negative is not None and str(negative) != "" else ""
+        prompt_ref = str(ref_prefix) + ""
+
+        image_slots = [
+            (image1, image1_tokens),
+            (image2, image2_tokens),
+            (image3, image3_tokens),
+            (image4, image4_tokens),
+        ]
+
+        # Determine the pass count from the largest image batch.
+        max_batch = 0
+        for img, _ in image_slots:
+            max_batch = max(max_batch, self._batch_len(img))
+
+        n_passes = max_batch if max_batch > 0 else 1
+
+        guidance_passes = []
+
+        # Per-pass cache: keyed on a signature of the pass's images + params.
+        # Minor option tweaks reuse cached passes instead of re-encoding.
+        cache = getattr(self, "_pass_cache", None)
+        if cache is None:
+            cache = {}
+            self._pass_cache = cache
+
+        for p in range(n_passes):
+            # Build per-pass image list: slice any batched input to frame p,
+            # keep single/non-batched inputs as-is.
+            pass_images = []
+            for img, tier in image_slots:
+                if img is None:
+                    pass_images.append((None, tier))
+                    continue
+                bl = self._batch_len(img)
+                if bl > 1:
+                    pass_images.append((self._slice_image(img, p), tier))
+                else:
+                    pass_images.append((img, tier))
+
+            has_image = any(img is not None for img, _ in pass_images)
+
+            # Cache key: image signatures + the encode/rebalance params.
+            key = (
+                p,
+                tuple(self._image_signature(img) for img, _ in pass_images),
+                tuple(tier for _, tier in pass_images),
+                float(steering),
+                float(layer_multiplier),
+                bool(enable_step),
+                prompt, prompt_ref,
+            )
+
+            if key in cache:
+                guidance_passes.append(cache[key])
+                continue
+
+            cond_main = compile_edit_krea2(clip, prompt, pass_images if has_image else None)
+            cond_ref = compile_edit_krea2(clip, prompt_ref, pass_images if has_image else None)
+
+            # Refocus main and ref with the shared multiplier + fixed layers.
+            cond_main = refocus(cond_main, layer_multiplier, self.DEFAULT_MAIN_WEIGHTS)
+            cond_ref = refocus(cond_ref, layer_multiplier, self.DEFAULT_REF_WEIGHTS)
+
+            # First guidance for this pass.
+            pass_guidance = guidance(cond_main, cond_ref, steering)
+            cache[key] = pass_guidance
+            guidance_passes.append(pass_guidance)
+
+        if not guidance_passes:
+            # Fallback: encode text-only.
+            final = compile_edit_krea2(clip, prompt, None)
+            return (final,)
+
+        if len(guidance_passes) == 1:
+            merged = guidance_passes[0]
+        elif anchor is not None:
+            merged = merge_conditioning_anchor(anchor, guidance_passes, match_percent)
+        else:
+            # No anchor supplied: fall back to Conditioning Merge (Multi).
+            merged = merge_conditioning_multi(guidance_passes, match_percent)
+
+        if enable_step:
+            # Custom Rebalance CFG with fixed schedules.
+            cond_raw = compile_edit_krea2(clip, prompt, None)
+            merged = core.RebalanceCFG().main(
+                cond_raw, merged,
+                "0.000-0.100:4.00;",
+                "0.100-0.750:0.80; 0.750-0.875:1.40; 0.875-1.000:20.50",
+                "gradual", 8,
+            )[0]
+
+        return (merged,)
 
 
 NODE_CLASS_MAPPINGS = {

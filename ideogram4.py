@@ -7,6 +7,8 @@ from .conditioning_rebalance import (
     compile_edit,
     guidance,
     refocus,
+    merge_conditioning_anchor,
+    merge_conditioning_multi,
     _align_prompt,
 )
 
@@ -53,7 +55,7 @@ def compile_edit_ideogram4(clip, prompt, images_with_size=None):
 class ConditioningIdeogram4Rebalance:
 
     # 13 weights
-    DEFAULT_WEIGHTS = "1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0"
+    DEFAULT_WEIGHTS = "1.0,1.0,1.0,1.0,1.0,0.0,2.25,0.0,2.25,0.5,1.0,1.0,1.0"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -75,14 +77,20 @@ class ConditioningIdeogram4Rebalance:
 
 
 class Ideogram4EditRebalance:
+
+    # 13 weights
+    DEFAULT_MAIN_WEIGHTS = "1.0,1.0,1.0,1.0,1.0,0.0,2.25,0.0,2.25,0.5,1.0,1.0,1.0"
+    DEFAULT_REF_WEIGHTS = "1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0"
+
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
             "text": ("STRING", {"multiline": True, "dynamicPrompts": True}),
             "clip": ("CLIP",),
-        },
-        "optional": {
-            "negative": ("STRING", {"forceInput": True}),
+            "steering": ("FLOAT", {"default": 1.0, "min": -2.0, "max": 2.0, "step": 0.01}),
+            "layer_multiplier": ("FLOAT", {"default": 1.0, "min": -1000000000.0, "max": 1000000000.0, "step": 0.01}),
+            "enable_step": ("BOOLEAN", {"default": True}),
+        }, "optional": {
             "image1": ("IMAGE",),
             "image1_tokens": (["low", "normal", "high", "max"], {"default": "normal"}),
             "image2": ("IMAGE",),
@@ -99,20 +107,49 @@ class Ideogram4EditRebalance:
     CATEGORY = "conditioning"
 
     @staticmethod
-    def _process_cond(cond_main, cond_ref, refocus_strength=1.00, guidance_strength=1.000):
-        # 13-band refocus: keep ref uniform, isolate the subject band (index 8).
-        cond_ref = refocus(
-            cond_ref, refocus_strength,
-            "1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0",
-        )
-        cond_main = refocus(
-            cond_main, refocus_strength,
-            "1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0",
-        )
-        return guidance(cond_main, cond_ref, guidance_strength)
+    def _batch_len(image):
+        """Return the batch length of an image tensor or list (0 if None)."""
+        if image is None:
+            return 0
+        if isinstance(image, list):
+            return len(image)
+        if hasattr(image, "shape") and len(image.shape) >= 4:
+            return int(image.shape[0])
+        if hasattr(image, "shape") and len(image.shape) == 3:
+            return 1
+        return 1
 
-    def main(self, text, clip, refocus_strength=1.00, guidance_strength=1.000,
-             negative=None,
+    @staticmethod
+    def _slice_image(image, idx):
+        """Return the idx-th frame of an image tensor/list, keeping a batch dim."""
+        if image is None:
+            return None
+        if isinstance(image, list):
+            item = image[idx]
+            if hasattr(item, "shape") and len(item.shape) == 3:
+                return item.unsqueeze(0)
+            return item
+        if len(image.shape) >= 4:
+            return image[idx:idx + 1]
+        return image
+
+    @staticmethod
+    def _image_signature(image):
+        """Cheap signature for caching: shape + a few sampled values."""
+        if image is None:
+            return ("none",)
+        if isinstance(image, list):
+            return ("list", len(image),
+                    tuple(img.shape for img in image if hasattr(img, "shape")))
+        if hasattr(image, "shape"):
+            return ("tensor", tuple(image.shape))
+        return ("unknown",)
+
+    def main(self, text, clip,
+             steering=1.0,
+             layer_multiplier=1.0,
+             enable_step=True,
+             negative=None, anchor=None,
              image1=None, image1_tokens="normal",
              image2=None, image2_tokens="normal",
              image3=None, image3_tokens="normal",
@@ -120,63 +157,95 @@ class Ideogram4EditRebalance:
         if not _COMFY_AVAILABLE:
             raise RuntimeError("Ideogram 4 Edit requires ComfyUI (comfy.utils, node_helpers).")
 
-        safe = _align_prompt(text)
-        prompt_main = "" + safe
+        match_percent = 0.8
+
+        prompt = "" + _align_prompt(text)
         ref_prefix = negative if negative is not None and str(negative) != "" else ""
         prompt_ref = str(ref_prefix) + ""
 
-        images_with_size = [
+        ml = self.DEFAULT_MAIN_WEIGHTS
+        rl = self.DEFAULT_REF_WEIGHTS
+
+        image_slots = [
             (image1, image1_tokens),
             (image2, image2_tokens),
             (image3, image3_tokens),
             (image4, image4_tokens),
         ]
-        has_image = any(img is not None for img, _ in images_with_size)
 
-        cond_raw = compile_edit_ideogram4(clip, prompt_main, None)
+        max_batch = 0
+        for img, _ in image_slots:
+            max_batch = max(max_batch, self._batch_len(img))
 
-        if has_image:
-            cond_image_main = compile_edit_ideogram4(clip, prompt_main, images_with_size)
-            cond_image_ref = compile_edit_ideogram4(clip, prompt_ref, images_with_size)
+        n_passes = max_batch if max_batch > 0 else 1
 
-            # compile the main cond with the subject layer before the 1st process (apply selective emphasis)
-            cond_image_main = refocus(
-                cond_image_main, 1.0,
-                "1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0",
+        guidance_passes = []
+
+        cache = getattr(self, "_pass_cache", None)
+        if cache is None:
+            cache = {}
+            self._pass_cache = cache
+
+        for p in range(n_passes):
+            pass_images = []
+            for img, tier in image_slots:
+                if img is None:
+                    pass_images.append((None, tier))
+                    continue
+                bl = self._batch_len(img)
+                if bl > 1:
+                    pass_images.append((self._slice_image(img, p), tier))
+                else:
+                    pass_images.append((img, tier))
+
+            has_image = any(img is not None for img, _ in pass_images)
+
+            key = (
+                p,
+                tuple(self._image_signature(img) for img, _ in pass_images),
+                tuple(tier for _, tier in pass_images),
+                float(steering),
+                float(layer_multiplier), str(ml),
+                float(layer_multiplier), str(rl),
+                bool(enable_step),
+                prompt, prompt_ref,
             )
 
-            # unfocus the subject on ref
-            cond_image_ref = refocus(
-                cond_image_ref, 1.0,
-                "1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0",
-            )
+            if key in cache:
+                guidance_passes.append(cache[key])
+                continue
 
-            # 1st process: subject vs outlier guidance
-            first = guidance(cond_image_main, cond_image_ref, guidance_strength)
+            cond_main = compile_edit_ideogram4(clip, prompt, pass_images if has_image else None)
+            cond_ref = compile_edit_ideogram4(clip, prompt_ref, pass_images if has_image else None)
 
-            # post process: re-refocus the subject layer, multiplier 1
-            compiled = refocus(
-                first, 1.0,
-                "1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0",
-            )
+            cond_main = refocus(cond_main, layer_multiplier, ml)
+            cond_ref = refocus(cond_ref, layer_multiplier, rl)
 
-            # 2: guider (unconditional vs compiled)
-            second = guidance(cond_raw, compiled, -0.5)
+            pass_guidance = guidance(cond_main, cond_ref, steering)
+            cache[key] = pass_guidance
+            guidance_passes.append(pass_guidance)
 
-            # 3: guider (first pipe vs second)
-            third = guidance(first, second, -0.5)
+        if not guidance_passes:
+            final = compile_edit_ideogram4(clip, prompt, None)
+            return (final,)
 
-            # step 4: custom Rebalance CFG with fixed schedules
-            final = core.RebalanceCFG().main(
-                cond_raw, third,
-                "0.000-0.200:1.00;",
-                "0.200-0.750:0.80; 0.750-0.875:1.40; 0.875-1.000:20.50",
+        if len(guidance_passes) == 1:
+            merged = guidance_passes[0]
+        elif anchor is not None:
+            merged = merge_conditioning_anchor(anchor, guidance_passes, match_percent)
+        else:
+            merged = merge_conditioning_multi(guidance_passes, match_percent)
+
+        if enable_step:
+            cond_raw = compile_edit_ideogram4(clip, prompt, None)
+            merged = core.RebalanceCFG().main(
+                cond_raw, merged,
+                "0.000-0.100:4.00;",
+                "0.100-0.750:0.80; 0.750-0.875:1.40; 0.875-1.000:20.50",
                 "gradual", 8,
             )[0]
-        else:
-            final = cond_raw
 
-        return (final,)
+        return (merged,)
 
 
 class Ideogram4EncodeRebalance:

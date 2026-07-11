@@ -304,6 +304,336 @@ def guidance(conditioning, reference, strength, n_bands=None):
     return guidance_conditioning(conditioning, reference, strength, per_band_strengths=None, n_bands=n_bands)
 
 
+def _top_percent_mask(t, percent, dim=-1):
+    """Boolean mask selecting the top `percent` of elements by magnitude along `dim`."""
+    if percent >= 1.0:
+        return torch.ones_like(t, dtype=torch.bool)
+    if percent <= 0.0:
+        return torch.zeros_like(t, dtype=torch.bool)
+    mag = t.float().abs()
+    size = t.shape[dim]
+    k = max(1, int(round(percent * size)))
+    k = min(k, size)
+    _, idx = torch.topk(mag, k, dim=dim)
+    mask = torch.zeros_like(t, dtype=torch.bool)
+    mask.scatter_(dim, idx, True)
+    return mask
+
+
+def _pad_seq(t, target_len):
+    """Right-pad a conditioning tensor along the token dimension (dim 1)."""
+    cur = t.shape[1]
+    if cur >= target_len:
+        return t
+    pad_shape = list(t.shape)
+    pad_shape[1] = target_len - cur
+    pad = torch.zeros(pad_shape, dtype=t.dtype, device=t.device)
+    return torch.cat([t, pad], dim=1)
+
+
+def _merge_top_match_tensor(cond_a, cond_b, match_percent):
+    """Equally merge two conditioning tensors.
+
+    Elements that are in the top `match_percent` of *both* tensors by magnitude
+    and share the same sign (i.e. they "match") are averaged for an equal blend.
+    Elements that do not match fall back to the higher-magnitude source so no
+    information is lost where the two conditionings disagree.
+    """
+    orig_dtype = cond_a.dtype
+    a = cond_a.float()
+    b = cond_b.float()
+    b = _match_batch(b, a.shape[0])
+
+    # Pad the shorter tensor to match the longer one along the token dimension.
+    if a.dim() >= 2 and b.dim() >= 2 and a.shape[1] != b.shape[1]:
+        target_len = max(a.shape[1], b.shape[1])
+        a = _pad_seq(a, target_len)
+        b = _pad_seq(b, target_len)
+
+    mask_a = _top_percent_mask(a, match_percent)
+    mask_b = _top_percent_mask(b, match_percent)
+    sign_match = (a.sign() == b.sign())
+    match = mask_a & mask_b & sign_match
+
+    avg = (a + b) / 2.0
+    a_dominant = a.abs() >= b.abs()
+    fallback = torch.where(a_dominant, a, b)
+    out = torch.where(match, avg, fallback)
+    return out.to(orig_dtype)
+
+
+def merge_conditioning(structure_a, structure_b, match_percent):
+    if isinstance(structure_a, list):
+        out = []
+        b_iter = iter(structure_b) if isinstance(structure_b, list) else None
+        for item in structure_a:
+            b_item = next(b_iter, None) if b_iter is not None else None
+            if isinstance(item, (list, tuple)) and len(item) == 2 \
+                    and isinstance(item[0], torch.Tensor) and isinstance(item[1], dict):
+                cond_a, extras = item
+                cond_b = _extract_cond_tensor(b_item) if b_item is not None else None
+                new_cond = _merge_top_match_tensor(cond_a, cond_b, match_percent) \
+                    if cond_b is not None else cond_a
+                out.append([new_cond, dict(extras)])
+            else:
+                out.append(merge_conditioning(item, b_item, match_percent))
+        return out
+    if isinstance(structure_a, torch.Tensor):
+        cond_b = _extract_cond_tensor(structure_b) if structure_b is not None else None
+        if cond_b is not None:
+            return _merge_top_match_tensor(structure_a, cond_b, match_percent)
+        return structure_a
+    return structure_a
+
+
+def _merge_top_match_tensor_n(tensors, match_percent):
+    """Equally merge N conditioning tensors.
+
+    Elements that are in the top `match_percent` of *all* tensors by magnitude
+    and share the same sign are averaged for an equal blend. Elements that do
+    not match fall back to the highest-magnitude source so no information is
+    lost where the conditionings disagree.
+    """
+    tensors = [t for t in tensors if t is not None]
+    if not tensors:
+        return None
+    if len(tensors) == 1:
+        return tensors[0]
+
+    orig_dtype = tensors[0].dtype
+    floats = [t.float() for t in tensors]
+    # Match batch size to the first tensor.
+    b0 = floats[0].shape[0]
+    floats = [_match_batch(t, b0) for t in floats]
+    # Pad the shorter tensors to match the longest along the token dimension.
+    if all(t.dim() >= 2 for t in floats):
+        target_len = max(t.shape[1] for t in floats)
+        floats = [_pad_seq(t, target_len) for t in floats]
+
+    stacked = torch.stack(floats, dim=0)  # (N, B, T, D)
+    masks = torch.stack([_top_percent_mask(t, match_percent) for t in floats], dim=0)
+    signs = torch.stack([t.sign() for t in floats], dim=0)
+    # Match: in top percent of all AND all signs agree.
+    match_all = masks.all(dim=0)
+    sign_all = (signs == signs[0:1]).all(dim=0)
+    match = match_all & sign_all
+
+    avg = stacked.mean(dim=0)
+    # Fallback: highest-magnitude tensor per element.
+    mag = stacked.abs()
+    dominant_idx = mag.argmax(dim=0, keepdim=False)
+    fallback = stacked.gather(0, dominant_idx.unsqueeze(0)).squeeze(0)
+    out = torch.where(match, avg, fallback)
+    return out.to(orig_dtype)
+
+
+def merge_conditioning_multi(structures, match_percent):
+    """Merge a list of conditioning structures (up to N) into one."""
+    structures = [s for s in structures if s is not None]
+    if not structures:
+        return None
+    if len(structures) == 1:
+        return structures[0]
+
+    base = structures[0]
+    if isinstance(base, list):
+        out = []
+        iters = [iter(s) if isinstance(s, list) else None for s in structures[1:]]
+        for item in base:
+            items = [item]
+            for it in iters:
+                items.append(next(it, None) if it is not None else None)
+            if isinstance(item, (list, tuple)) and len(item) == 2 \
+                    and isinstance(item[0], torch.Tensor) and isinstance(item[1], dict):
+                extras = item[1]
+                cond_tensors = []
+                for it_item in items:
+                    t = _extract_cond_tensor(it_item) if it_item is not None else None
+                    if t is not None:
+                        cond_tensors.append(t)
+                new_cond = _merge_top_match_tensor_n(cond_tensors, match_percent) \
+                    if cond_tensors else item[0]
+                out.append([new_cond, dict(extras)])
+            else:
+                sub = [s for s in items if s is not None]
+                out.append(merge_conditioning_multi(sub, match_percent))
+        return out
+    if isinstance(base, torch.Tensor):
+        cond_tensors = []
+        for s in structures:
+            t = _extract_cond_tensor(s) if s is not None else None
+            if t is not None:
+                cond_tensors.append(t)
+        if cond_tensors:
+            return _merge_top_match_tensor_n(cond_tensors, match_percent)
+        return base
+    return base
+
+
+def _merge_anchor_tensor(anchor, tensors, match_percent):
+    """Merge N conditioning tensors against an anchor.
+
+    The anchor defines which elements are relevant: an element is blended
+    (averaged across all inputs) only where it is in the top `match_percent`
+    of the anchor by magnitude AND every input agrees with the anchor's sign
+    there. Elements that do not match the anchor fall back to the
+    highest-magnitude input, so unmatched regions keep their strongest source.
+    """
+    tensors = [t for t in tensors if t is not None]
+    if not tensors:
+        return anchor
+    if anchor is None:
+        return _merge_top_match_tensor_n(tensors, match_percent)
+
+    orig_dtype = anchor.dtype
+    a = anchor.float()
+    b0 = a.shape[0]
+    floats = [_match_batch(t.float(), b0) for t in tensors]
+    # Pad everything to the longest token dimension.
+    if a.dim() >= 2 and all(t.dim() >= 2 for t in floats):
+        target_len = max([a.shape[1]] + [t.shape[1] for t in floats])
+        a = _pad_seq(a, target_len)
+        floats = [_pad_seq(t, target_len) for t in floats]
+
+    stacked = torch.stack(floats, dim=0)  # (N, B, T, D)
+    anchor_mask = _top_percent_mask(a, match_percent)
+    anchor_sign = a.sign()
+    sign_match = torch.stack([(t.sign() == anchor_sign) for t in floats], dim=0).all(dim=0)
+    match = anchor_mask & sign_match
+
+    avg = torch.cat([a.unsqueeze(0), stacked], dim=0).mean(dim=0)
+    mag = stacked.abs()
+    dominant_idx = mag.argmax(dim=0, keepdim=False)
+    fallback = stacked.gather(0, dominant_idx.unsqueeze(0)).squeeze(0)
+    out = torch.where(match, avg, fallback)
+    return out.to(orig_dtype)
+
+
+def merge_conditioning_anchor(anchor_structure, structures, match_percent):
+    """Merge a list of conditioning structures against an anchor structure."""
+    structures = [s for s in structures if s is not None]
+    if not structures:
+        return anchor_structure
+
+    base = anchor_structure
+    if isinstance(base, list):
+        out = []
+        iters = [iter(s) if isinstance(s, list) else None for s in structures]
+        for item in base:
+            items = []
+            for it in iters:
+                items.append(next(it, None) if it is not None else None)
+            if isinstance(item, (list, tuple)) and len(item) == 2 \
+                    and isinstance(item[0], torch.Tensor) and isinstance(item[1], dict):
+                anchor_t, extras = item
+                cond_tensors = []
+                for it_item in items:
+                    t = _extract_cond_tensor(it_item) if it_item is not None else None
+                    if t is not None:
+                        cond_tensors.append(t)
+                new_cond = _merge_anchor_tensor(anchor_t, cond_tensors, match_percent) \
+                    if cond_tensors else anchor_t
+                out.append([new_cond, dict(extras)])
+            else:
+                sub = [s for s in items if s is not None]
+                out.append(merge_conditioning_anchor(item, sub, match_percent))
+        return out
+    if isinstance(base, torch.Tensor):
+        anchor_t = _extract_cond_tensor(base) if base is not None else None
+        cond_tensors = []
+        for s in structures:
+            t = _extract_cond_tensor(s) if s is not None else None
+            if t is not None:
+                cond_tensors.append(t)
+        if cond_tensors:
+            return _merge_anchor_tensor(anchor_t, cond_tensors, match_percent)
+        return base
+    return base
+
+
+class ConditioningMergeMulti:
+    """Merge up to 5 conditionings equally by blending the highest
+    `match_percent` of each that agree (match) with the others."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "conditioning_1": ("CONDITIONING",),
+            "match_percent": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
+        }, "optional": {
+            "conditioning_2": ("CONDITIONING",),
+            "conditioning_3": ("CONDITIONING",),
+            "conditioning_4": ("CONDITIONING",),
+            "conditioning_5": ("CONDITIONING",),
+        }}
+
+    RETURN_TYPES = ("CONDITIONING",)
+    RETURN_NAMES = ("conditioning",)
+    FUNCTION = "main"
+    CATEGORY = "conditioning"
+
+    def main(self, conditioning_1, match_percent=0.5, conditioning_2=None,
+             conditioning_3=None, conditioning_4=None, conditioning_5=None):
+        match_percent = float(min(max(match_percent, 0.0), 1.0))
+        structures = [conditioning_1, conditioning_2, conditioning_3,
+                      conditioning_4, conditioning_5]
+        structures = [s for s in structures if s is not None]
+        if not structures:
+            raise ValueError("ConditioningMergeMulti: at least one conditioning is required.")
+        return (merge_conditioning_multi(structures, match_percent),)
+
+
+class ConditioningMergeAnchor:
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "anchor": ("CONDITIONING",),
+            "conditioning_1": ("CONDITIONING",),
+            "match_percent": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
+        }, "optional": {
+            "conditioning_2": ("CONDITIONING",),
+            "conditioning_3": ("CONDITIONING",),
+            "conditioning_4": ("CONDITIONING",),
+            "conditioning_5": ("CONDITIONING",),
+        }}
+
+    RETURN_TYPES = ("CONDITIONING",)
+    RETURN_NAMES = ("conditioning",)
+    FUNCTION = "main"
+    CATEGORY = "conditioning"
+
+    def main(self, anchor, conditioning_1, match_percent=0.5, conditioning_2=None,
+             conditioning_3=None, conditioning_4=None, conditioning_5=None):
+        match_percent = float(min(max(match_percent, 0.0), 1.0))
+        structures = [conditioning_1, conditioning_2, conditioning_3,
+                      conditioning_4, conditioning_5]
+        structures = [s for s in structures if s is not None]
+        if not structures:
+            raise ValueError("ConditioningMergeAnchor: at least one conditioning is required.")
+        return (merge_conditioning_anchor(anchor, structures, match_percent),)
+
+
+class ConditioningMerge:
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "conditioning_1": ("CONDITIONING",),
+            "conditioning_2": ("CONDITIONING",),
+            "match_percent": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
+        }}
+
+    RETURN_TYPES = ("CONDITIONING",)
+    RETURN_NAMES = ("conditioning",)
+    FUNCTION = "main"
+    CATEGORY = "conditioning"
+
+    def main(self, conditioning_1, conditioning_2, match_percent=0.5):
+        match_percent = float(min(max(match_percent, 0.0), 1.0))
+        return (merge_conditioning(conditioning_1, conditioning_2, match_percent),)
+
+
 class RebalanceGuider:
 
     @classmethod
@@ -488,12 +818,18 @@ NODE_CLASS_MAPPINGS = {
     "RebalanceGuider": RebalanceGuider,
     "StepRebalance": StepRebalance,
     "RebalanceCFG": RebalanceCFG,
+    "ConditioningMerge": ConditioningMerge,
+    "ConditioningMergeMulti": ConditioningMergeMulti,
+    "ConditioningMergeAnchor": ConditioningMergeAnchor,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "RebalanceGuider": "Rebalance Guider",
     "StepRebalance": "Step Rebalance",
     "RebalanceCFG": "Rebalance CFG Custom",
+    "ConditioningMerge": "Conditioning Merge",
+    "ConditioningMergeMulti": "Conditioning Merge (Multi)",
+    "ConditioningMergeAnchor": "Conditioning Merge (Anchor)",
 }
 
 __all__ = [
@@ -511,6 +847,12 @@ __all__ = [
     "refocus",
     "guidance",
     "guidance_conditioning",
+    "merge_conditioning",
+    "merge_conditioning_multi",
+    "merge_conditioning_anchor",
+    "ConditioningMerge",
+    "ConditioningMergeMulti",
+    "ConditioningMergeAnchor",
     "RebalanceCFG",
     "RebalanceGuider",
     "StepRebalance",
