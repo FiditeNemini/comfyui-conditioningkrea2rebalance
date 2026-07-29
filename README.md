@@ -20,7 +20,7 @@ node class, rebuilding its own inputs/outputs to mirror the source.
 [workflow.json](https://github.com/Rebalance-Pack/blob/main/workflows/krea2_image_edit_workflow%20(3).json)
 
 # Rebalance Pack
-A set of evolving nodes that balance ComfyUI for the best user experience.
+A set of evolving nodes that streamline the best use practices in ComfyUI.
 
 
 foundational: Omni Node, Input, Load Images, Concatenate (Multi), String (Inline), Any, Switch
