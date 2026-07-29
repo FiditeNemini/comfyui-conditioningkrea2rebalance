@@ -10,6 +10,7 @@ except ImportError:
     _COMFY_AVAILABLE = False
 
 
+# Encoder profile registry + automatic routing
 _ENCODER_PROFILES = {}
 
 
@@ -31,6 +32,7 @@ def register_encoder_profile(name, n_taps, hidden_dim, tap_layers=None):
 
     profile = EncoderProfile(name, n_taps, hidden_dim, tap_layers)
     _ENCODER_PROFILES[name] = profile
+    # Index by feature_dim for fast lookup
     _ENCODER_PROFILES.setdefault(("_dim", profile.feature_dim), []).append(profile)
     return profile
 
@@ -118,6 +120,7 @@ def _parse_floats(s):
         return None
     return vals
 
+# ignored
 SYS_TEMPLATE = (
     "<|im_start|>system\n"
     "Describe the key features of the input image (color, shape, size, texture, "
@@ -130,6 +133,7 @@ SYS_TEMPLATE = (
 )
 
 
+# Target longest-side resolution per tier. Each image is scaled to it selected resolution independently
 RESOLUTIONS = {"low": 256, "normal": 512, "high": 1024, "max": 1280}
 
 
@@ -145,6 +149,12 @@ def _scale_to_resolution(samples, target):
 
 
 def compile_edit(clip, prompt, images_with_size=None, llama_template=None):
+    """Encode an edit prompt with optional reference images.
+
+    ``llama_template`` selects the encoder's chat template. When ``None``, the
+    legacy ``SYS_TEMPLATE`` is used (Krea 2 default). Encoder-specific modules
+    pass their own template so the same helper serves both Krea 2 and Ideogram 4.
+    """
     if not _COMFY_AVAILABLE:
         raise RuntimeError("Edit encode requires ComfyUI (comfy.utils, node_helpers).")
 
@@ -159,9 +169,9 @@ def compile_edit(clip, prompt, images_with_size=None, llama_template=None):
             if image is None:
                 continue
             target = RESOLUTIONS.get(tier, 256)
-            samples = image.movedim(-1, 1)
+            samples = image.movedim(-1, 1)  # NHWC -> NCHW
             scaled = _scale_to_resolution(samples, target)
-            images_vl.append(scaled.movedim(1, -1))
+            images_vl.append(scaled.movedim(1, -1))  # back to NHWC for clip.tokenize
             image_prompt += "Picture {}: <|vision_start|><|image_pad|><|vision_end|>".format(len(images_vl))
 
     full_prompt = image_prompt + prompt if image_prompt else prompt
@@ -295,6 +305,7 @@ def guidance(conditioning, reference, strength, n_bands=None):
 
 
 def _top_percent_mask(t, percent, dim=-1):
+    """Boolean mask selecting the top `percent` of elements by magnitude along `dim`."""
     if percent >= 1.0:
         return torch.ones_like(t, dtype=torch.bool)
     if percent <= 0.0:
@@ -310,6 +321,7 @@ def _top_percent_mask(t, percent, dim=-1):
 
 
 def _pad_seq(t, target_len):
+    """Right-pad a conditioning tensor along the token dimension (dim 1)."""
     cur = t.shape[1]
     if cur >= target_len:
         return t
@@ -320,11 +332,19 @@ def _pad_seq(t, target_len):
 
 
 def _merge_top_match_tensor(cond_a, cond_b, match_percent):
+    """Equally merge two conditioning tensors.
+
+    Elements that are in the top `match_percent` of *both* tensors by magnitude
+    and share the same sign (i.e. they "match") are averaged for an equal blend.
+    Elements that do not match fall back to the higher-magnitude source so no
+    information is lost where the two conditionings disagree.
+    """
     orig_dtype = cond_a.dtype
     a = cond_a.float()
     b = cond_b.float()
     b = _match_batch(b, a.shape[0])
 
+    # Pad the shorter tensor to match the longer one along the token dimension.
     if a.dim() >= 2 and b.dim() >= 2 and a.shape[1] != b.shape[1]:
         target_len = max(a.shape[1], b.shape[1])
         a = _pad_seq(a, target_len)
@@ -367,6 +387,13 @@ def merge_conditioning(structure_a, structure_b, match_percent):
 
 
 def _merge_top_match_tensor_n(tensors, match_percent):
+    """Equally merge N conditioning tensors.
+
+    Elements that are in the top `match_percent` of *all* tensors by magnitude
+    and share the same sign are averaged for an equal blend. Elements that do
+    not match fall back to the highest-magnitude source so no information is
+    lost where the conditionings disagree.
+    """
     tensors = [t for t in tensors if t is not None]
     if not tensors:
         return None
@@ -375,20 +402,24 @@ def _merge_top_match_tensor_n(tensors, match_percent):
 
     orig_dtype = tensors[0].dtype
     floats = [t.float() for t in tensors]
+    # Match batch size to the first tensor.
     b0 = floats[0].shape[0]
     floats = [_match_batch(t, b0) for t in floats]
+    # Pad the shorter tensors to match the longest along the token dimension.
     if all(t.dim() >= 2 for t in floats):
         target_len = max(t.shape[1] for t in floats)
         floats = [_pad_seq(t, target_len) for t in floats]
 
-    stacked = torch.stack(floats, dim=0)
+    stacked = torch.stack(floats, dim=0)  # (N, B, T, D)
     masks = torch.stack([_top_percent_mask(t, match_percent) for t in floats], dim=0)
     signs = torch.stack([t.sign() for t in floats], dim=0)
+    # Match: in top percent of all AND all signs agree.
     match_all = masks.all(dim=0)
     sign_all = (signs == signs[0:1]).all(dim=0)
     match = match_all & sign_all
 
     avg = stacked.mean(dim=0)
+    # Fallback: highest-magnitude tensor per element.
     mag = stacked.abs()
     dominant_idx = mag.argmax(dim=0, keepdim=False)
     fallback = stacked.gather(0, dominant_idx.unsqueeze(0)).squeeze(0)
@@ -397,6 +428,7 @@ def _merge_top_match_tensor_n(tensors, match_percent):
 
 
 def merge_conditioning_multi(structures, match_percent):
+    """Merge a list of conditioning structures (up to N) into one."""
     structures = [s for s in structures if s is not None]
     if not structures:
         return None
@@ -439,6 +471,14 @@ def merge_conditioning_multi(structures, match_percent):
 
 
 def _merge_anchor_tensor(anchor, tensors, match_percent):
+    """Merge N conditioning tensors against an anchor.
+
+    The anchor defines which elements are relevant: an element is blended
+    (averaged across all inputs) only where it is in the top `match_percent`
+    of the anchor by magnitude AND every input agrees with the anchor's sign
+    there. Elements that do not match the anchor fall back to the
+    highest-magnitude input, so unmatched regions keep their strongest source.
+    """
     tensors = [t for t in tensors if t is not None]
     if not tensors:
         return anchor
@@ -449,12 +489,13 @@ def _merge_anchor_tensor(anchor, tensors, match_percent):
     a = anchor.float()
     b0 = a.shape[0]
     floats = [_match_batch(t.float(), b0) for t in tensors]
+    # Pad everything to the longest token dimension.
     if a.dim() >= 2 and all(t.dim() >= 2 for t in floats):
         target_len = max([a.shape[1]] + [t.shape[1] for t in floats])
         a = _pad_seq(a, target_len)
         floats = [_pad_seq(t, target_len) for t in floats]
 
-    stacked = torch.stack(floats, dim=0)
+    stacked = torch.stack(floats, dim=0)  # (N, B, T, D)
     anchor_mask = _top_percent_mask(a, match_percent)
     anchor_sign = a.sign()
     sign_match = torch.stack([(t.sign() == anchor_sign) for t in floats], dim=0).all(dim=0)
@@ -469,6 +510,7 @@ def _merge_anchor_tensor(anchor, tensors, match_percent):
 
 
 def merge_conditioning_anchor(anchor_structure, structures, match_percent):
+    """Merge a list of conditioning structures against an anchor structure."""
     structures = [s for s in structures if s is not None]
     if not structures:
         return anchor_structure
@@ -510,6 +552,78 @@ def merge_conditioning_anchor(anchor_structure, structures, match_percent):
 
 
 class ConditioningMergeMulti:
+    """Merge up to 5 conditionings equally by blending the highest
+    `match_percent` of each that agree (match) with the others."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "conditioning_1": ("CONDITIONING",),
+            "match_percent": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
+        }, "optional": {
+            "conditioning_2": ("CONDITIONING",),
+            "conditioning_3": ("CONDITIONING",),
+            "conditioning_4": ("CONDITIONING",),
+            "conditioning_5": ("CONDITIONING",),
+        }}
+
+    RETURN_TYPES = ("CONDITIONING",)
+    RETURN_NAMES = ("conditioning",)
+    FUNCTION = "main"
+    CATEGORY = "Rebalance-Pack/conditioning"
+
+    def main(self, conditioning_1, match_percent=0.5, conditioning_2=None,
+             conditioning_3=None, conditioning_4=None, conditioning_5=None):
+        match_percent = float(min(max(match_percent, 0.0), 1.0))
+        structures = [conditioning_1, conditioning_2, conditioning_3,
+                      conditioning_4, conditioning_5]
+        structures = [s for s in structures if s is not None]
+        if not structures:
+            raise ValueError("ConditioningMergeMulti: at least one conditioning is required.")
+        return (merge_conditioning_multi(structures, match_percent),)
+
+
+class ConditioningMerge:
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "conditioning_1": ("CONDITIONING",),
+            "conditioning_2": ("CONDITIONING",),
+            "match_percent": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
+        }}
+
+    RETURN_TYPES = ("CONDITIONING",)
+    RETURN_NAMES = ("conditioning",)
+    FUNCTION = "main"
+    CATEGORY = "Rebalance-Pack/conditioning"
+
+    def main(self, conditioning_1, conditioning_2, match_percent=0.5):
+        match_percent = float(min(max(match_percent, 0.0), 1.0))
+        return (merge_conditioning(conditioning_1, conditioning_2, match_percent),)
+
+
+class RebalanceGuider:
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "positive": ("CONDITIONING",),
+            "negative": ("CONDITIONING",),
+            "guidance_strength": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 2.0, "step": 0.01}),
+        }}
+
+    RETURN_TYPES = ("CONDITIONING",)
+    RETURN_NAMES = ("conditioning",)
+    FUNCTION = "main"
+    CATEGORY = "Rebalance-Pack/conditioning"
+
+    def main(self, positive, negative, guidance_strength=0.500):
+        return (guidance(positive, negative, guidance_strength),)
+
+
+class StepRebalance:
+    """Split a conditioning schedule at a step threshold."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -523,7 +637,7 @@ class ConditioningMergeMulti:
     RETURN_TYPES = ("CONDITIONING",)
     RETURN_NAMES = ("conditioning",)
     FUNCTION = "main"
-    CATEGORY = "conditioning"
+    CATEGORY = "Rebalance-Pack/conditioning"
 
     def main(self, conditioning_1, conditioning_2, step=0.00, bound=0.00):
         if not _COMFY_AVAILABLE:
@@ -602,6 +716,7 @@ def _build_schedule_segments(conditioning, points, interpolation, sub_steps=8):
                 f1 = (k + 1) / sub_steps
                 ts = t0 + (t1 - t0) * f0
                 te = t0 + (t1 - t0) * f1
+                # use the sub-segment midpoint for a stable linear ramp
                 m = m_i + (m_next - m_i) * ((f0 + f1) / 2.0)
                 seg = scale_conditioning(conditioning, m)
                 seg = node_helpers.conditioning_set_values(
@@ -622,6 +737,7 @@ def _build_schedule_segments(conditioning, points, interpolation, sub_steps=8):
 
 
 class RebalanceCFG:
+    """CFG-style conditioning rebalance from editable point schedule strings."""
 
     DEFAULT_SCHEDULE_1 = (
         "0.000-0.125:1.50; 0.125-0.250:1.40; 0.250-0.375:1.20; 0.375-0.500:1.00;"
@@ -646,7 +762,7 @@ class RebalanceCFG:
     RETURN_TYPES = ("CONDITIONING",)
     RETURN_NAMES = ("conditioning",)
     FUNCTION = "main"
-    CATEGORY = "conditioning"
+    CATEGORY = "Rebalance-Pack/conditioning"
 
     def main(self, conditioning_1, conditioning_2, schedule_1, schedule_2,
              interpolation="gradual", sub_steps=8):
@@ -688,6 +804,7 @@ __all__ = [
     "NODE_DISPLAY_NAME_MAPPINGS",
 
 
+    # Core helpers re-exported
     "EncoderProfile",
     "register_encoder_profile",
     "get_encoder_profile",

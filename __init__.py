@@ -1,5 +1,5 @@
 """
-Rebalance-Pack
+Rebalance-Pack - merged ComfyUI custom node package.
 
     omni_nodes.py           -> OmniNode
     foundational.py         -> quickwork utility nodes

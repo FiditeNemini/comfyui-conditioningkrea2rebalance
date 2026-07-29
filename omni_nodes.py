@@ -24,8 +24,8 @@ class OmniSpec:
         self.raw_source: str = ""
         self.error: Optional[str] = None
 
-    
     def input_types_dict(self) -> Dict[str, Dict[str, Any]]:
+
         return {
             "required": {k: v for k, v in self.required.items()},
             "optional": {k: v for k, v in self.optional.items()},
@@ -33,6 +33,7 @@ class OmniSpec:
         }
 
     def to_json(self) -> Dict[str, Any]:
+
         def _ser(spec_entry: Tuple[Any, Dict[str, Any]]) -> Tuple[Any, Dict[str, Any]]:
             t, opts = spec_entry
             if isinstance(t, (list, tuple)):
@@ -61,8 +62,6 @@ class OmniSpec:
 
 
 
-
-
 _KNOWN_TYPE_NAMES = {
     "IMAGE", "MASK", "LATENT", "CONDITIONING", "CLIP", "MODEL", "VAE",
     "CLIP_VISION", "CLIP_VISION_OUTPUT", "CONTROL_NET", "STYLE_MODEL",
@@ -75,7 +74,6 @@ _KNOWN_TYPE_NAMES = {
 class _TypeResolver(ast.NodeTransformer):
 
     def visit_Name(self, node: ast.Name) -> ast.AST:
-
         return ast.Constant(value=node.id)
 
 
@@ -96,7 +94,6 @@ def parse_omni_source(source: str) -> OmniSpec:
         spec.error = "No code pasted."
         return spec
 
-
     try:
         tree = ast.parse(source)
     except SyntaxError as e:
@@ -108,12 +105,10 @@ def parse_omni_source(source: str) -> OmniSpec:
         spec.class_name = class_node.name
         body = class_node.body
     else:
-
         spec.class_name = "OmniPasted"
         body = tree.body
 
     _extract_class_attrs(body, spec)
-
 
     if spec.return_types and not isinstance(spec.return_types, tuple):
         spec.return_types = (spec.return_types,)
@@ -124,14 +119,12 @@ def parse_omni_source(source: str) -> OmniSpec:
 def _find_first_node_class(tree: ast.Module) -> Optional[ast.ClassDef]:
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
-
             has_input_types = any(
                 isinstance(n, ast.FunctionDef) and n.name == "INPUT_TYPES"
                 for n in node.body
             )
             if has_input_types:
                 return node
-
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
             has_return = any(
@@ -192,12 +185,12 @@ def _handle_assignment(name: str, value: ast.AST, spec: OmniSpec) -> None:
 
 
 def _parse_return_types(value: ast.AST) -> Tuple[Any, ...]:
+
     if isinstance(value, ast.Tuple):
         out = []
         for el in value.elts:
             out.append(_parse_single_type(el))
         return tuple(out)
-
     return (_parse_single_type(value),)
 
 
@@ -210,7 +203,6 @@ def _parse_single_type(node: ast.AST) -> Any:
         try:
             return list(ast.literal_eval(node))
         except Exception:
-
             out = []
             for el in node.elts:
                 if isinstance(el, ast.Constant):
@@ -218,9 +210,8 @@ def _parse_single_type(node: ast.AST) -> Any:
                 elif isinstance(el, ast.Name):
                     out.append(el.id)
                 else:
-                    out.append("*")  
+                    out.append("*")
             return out
-
     return "*"
 
 
@@ -241,7 +232,6 @@ def _parse_input_types_func(
             continue
         section = key_node.value
         if section == "hidden":
-
             try:
                 hidden = ast.literal_eval(value_node)
             except Exception:
@@ -264,13 +254,12 @@ def _parse_input_types_func(
 
 
 def _find_returned_dict(func_node: ast.FunctionDef) -> Optional[ast.Dict]:
-  
+
     for node in ast.walk(func_node):
         if isinstance(node, ast.Return) and isinstance(node.value, ast.Dict):
             return node.value
         if isinstance(node, ast.Return) and isinstance(node.value, ast.Name):
             var_name = node.value.id
- 
             for stmt in func_node.body:
                 if (isinstance(stmt, ast.Assign)
                         and isinstance(stmt.value, ast.Dict)
@@ -280,22 +269,19 @@ def _find_returned_dict(func_node: ast.FunctionDef) -> Optional[ast.Dict]:
 
 
 def _normalize_input_entry(entry: Any) -> Tuple[Any, Dict[str, Any]]:
+
     if isinstance(entry, str):
         return (entry, {})
     if isinstance(entry, tuple):
-
         if len(entry) == 2 and isinstance(entry[1], dict):
             t, opts = entry
             return (t, dict(opts))
         if len(entry) == 1:
             return (entry[0], {})
-
         return (entry[0] if entry else "*", {})
     if isinstance(entry, list):
-
         return (list(entry), {})
     if isinstance(entry, dict):
-
         t = entry.get("type", "*")
         opts = {k: v for k, v in entry.items() if k != "type"}
         return (t, opts)
@@ -318,7 +304,6 @@ def compile_omni_class(source: str) -> Tuple[Optional[type], OmniSpec]:
     cached = _SOURCE_CACHE.get(source)
     if cached is not None:
         return cached[0], spec
-
 
     namespace: Dict[str, Any] = {}
     for name in _KNOWN_TYPE_NAMES:
@@ -343,7 +328,6 @@ def compile_omni_class(source: str) -> Tuple[Optional[type], OmniSpec]:
 def _find_class_in_namespace(namespace: Dict[str, Any], name: str) -> Optional[type]:
     if name in namespace and isinstance(namespace[name], type):
         return namespace[name]
-    
     for v in namespace.values():
         if isinstance(v, type) and hasattr(v, "INPUT_TYPES"):
             return v
@@ -355,17 +339,13 @@ class OmniNode:
 
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Dict[str, Any]]:
-       
         base_required = {
             "code": ("STRING", {
                 "default": "",
                 "multiline": True,
-                "tooltip": (
-                    "Paste any ComfyUI node class source into the 'code' widget and press Update."
-                ),
+
             }),
         }
-
         base_optional = {
             "omni_spec": ("STRING", {
                 "default": "",
@@ -373,8 +353,6 @@ class OmniNode:
                 "advanced": True,
             }),
         }
-
-
         base_hidden = {
             "prompt": "PROMPT",
             "unique_id": "UNIQUE_ID",
@@ -385,25 +363,21 @@ class OmniNode:
             "hidden": base_hidden,
         }
 
-
     _WILDCARD_OUT = tuple("*" for _ in range(24))
     RETURN_TYPES = _WILDCARD_OUT
     RETURN_NAMES = tuple(f"output_{i + 1}" for i in range(24))
     FUNCTION = "execute"
-    CATEGORY = "omni"
+    CATEGORY = "Rebalance-Pack/foundational"
     DESCRIPTION = (
         "Paste any ComfyUI node class source into the 'code' widget and press Update."
     )
     OUTPUT_IS_LIST = tuple(False for _ in range(24))
 
-
     @classmethod
     def VALIDATE_INPUTS(cls, **kwargs) -> bool:
         return True
 
-
     def execute(self, code: str = "", **kwargs) -> Tuple[Any, ...]:
-        
         kwargs.pop("omni_spec", None)
 
         prompt = kwargs.pop("prompt", None)
@@ -441,26 +415,23 @@ class OmniNode:
             if isinstance(node_inputs, dict):
                 for name in declared:
                     if name in call_kwargs:
-                        continue 
+                        continue
                     if name not in node_inputs:
                         continue
                     val = node_inputs[name]
-
                     if isinstance(val, list) and len(val) == 2 and all(isinstance(x, (int, str)) for x in val):
                         continue
-    
                     if isinstance(val, dict) and "__value__" in val:
                         val = val["__value__"]
                     call_kwargs[name] = val
 
         result = func(**call_kwargs)
 
-
         return _normalize_result(result, spec)
 
 
 def _normalize_result(result: Any, spec: OmniSpec) -> Tuple[Any, ...]:
-    
+
     n = len(spec.return_types)
     if n == 0:
         return ()
@@ -474,7 +445,6 @@ def _normalize_result(result: Any, spec: OmniSpec) -> Tuple[Any, ...]:
     else:
         vals = [result]
 
-  
     if len(vals) < n:
         vals = vals + [None] * (n - len(vals))
     elif len(vals) > n:
