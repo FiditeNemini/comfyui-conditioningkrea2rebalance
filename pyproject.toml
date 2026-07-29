@@ -1,5 +1,5 @@
 [project]
-name = "ComfyUI-Conditioning-Rebalance"
+name = "Rebalance-Pack"
 description = """A set of evolving nodes that balance ComfyUI for the best user experience.
 
 foundational: Omni Node, Input, Load Images, Concatenate (Multi), String (Inline), Any, Switch
@@ -20,6 +20,6 @@ Documentation = "https://github.com/nova452/OmniNode/wiki"
 
 [tool.comfy]
 PublisherId = "nova452"
-DisplayName = "ComfyUI-Conditioning-Rebalance"
+DisplayName = "Rebalance-Pack"
 Icon = "avatar.svg"
 includes = []
