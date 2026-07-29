@@ -1,0 +1,35 @@
+<svg width="87" height="87" viewBox="0 0 87 87" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Omni holo gradient: mirrors the OmniNode holographic hue cycle
+         (hsl 0 -> 90 -> 180 -> 270 -> 0, 70% sat, 65% light) from omni_node.js -->
+    <linearGradient id="omniHolo" x1="0" y1="0" x2="87" y2="87" gradientUnits="userSpaceOnUse">
+      <stop offset="0"    stop-color="#E56767">
+        <animate attributeName="stop-color"
+          values="#E56767;#A6E567;#67E5A6;#A667E5;#E56767"
+          dur="10s" repeatCount="indefinite" />
+      </stop>
+      <stop offset="0.5"  stop-color="#67E5A6">
+        <animate attributeName="stop-color"
+          values="#67E5A6;#A667E5;#E56767;#A6E567;#67E5A6"
+          dur="10s" repeatCount="indefinite" />
+      </stop>
+      <stop offset="1"    stop-color="#A667E5">
+        <animate attributeName="stop-color"
+          values="#A667E5;#E56767;#A6E567;#67E5A6;#A667E5"
+          dur="10s" repeatCount="indefinite" />
+      </stop>
+    </linearGradient>
+    <!-- Moving sheen, matching the OmniNode paintOmniHolo sheen sweep -->
+    <linearGradient id="omniSheen" x1="0" y1="0" x2="87" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0"   stop-color="#ffffff" stop-opacity="0" />
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.35">
+        <animate attributeName="offset"
+          values="-0.4;1.4;-0.4" dur="6s" repeatCount="indefinite" />
+      </stop>
+      <stop offset="1"   stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+  </defs>
+
+  <rect x="0.271484" y="0.547852" width="86" height="86" rx="16" fill="url(#omniHolo)" />
+  <rect x="0.271484" y="0.547852" width="86" height="86" rx="16" fill="url(#omniSheen)" />
+</svg>

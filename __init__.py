@@ -1,61 +1,40 @@
-from .conditioning_rebalance import (
-    RebalanceGuider,
-    StepRebalance,
-    RebalanceCFG,
-    ConditioningMerge,
-    ConditioningMergeMulti,
-    ConditioningMergeAnchor,
-)
-from .krea2 import (
-    ConditioningKrea2Rebalance,
-    Krea2EditRebalance,
-    Krea2EncodeRebalance,
-)
-from .ideogram4 import (
-    ConditioningIdeogram4Rebalance,
-    Ideogram4EditRebalance,
-    Ideogram4EncodeRebalance,
-)
-from .utilities import (
-    LoadImages,
-    Any,
-    Input,
-)
+"""
+Rebalance-Pack
+
+    omni_nodes.py           -> OmniNode
+    foundational.py         -> quickwork utility nodes
+    resize_toolkit.py       -> ImageResolutionCap, ImageAspectRatioCrop,
+                               MaskAspectRatioBBox
+    mask_toolkit.py         -> UncropImage, UncropMask, BorderMaskDetector
+    conditioning_rebalance.py -> RebalanceGuider, StepRebalance, RebalanceCFG,
+                               ConditioningMerge, ConditioningMergeMulti
+    krea2.py                -> ConditioningKrea2Rebalance, Krea2EditRebalance,
+                               Krea2EncodeRebalance
+    ideogram4.py            -> ConditioningIdeogram4Rebalance,
+                               Ideogram4EditRebalance, Ideogram4EncodeRebalance
+
+"""
+
+from .omni_nodes import OmniNode
+from . import foundational
+from . import resize_toolkit
+from . import mask_toolkit
+from . import conditioning_rebalance
+from . import krea2
+from . import ideogram4
 
 NODE_CLASS_MAPPINGS = {
-    "RebalanceGuider": RebalanceGuider,
-    "StepRebalance": StepRebalance,
-    "RebalanceCFG": RebalanceCFG,
-    "ConditioningKrea2Rebalance": ConditioningKrea2Rebalance,
-    "Krea2EditRebalance": Krea2EditRebalance,
-    "Krea2EncodeRebalance": Krea2EncodeRebalance,
-    "ConditioningIdeogram4Rebalance": ConditioningIdeogram4Rebalance,
-    "Ideogram4EditRebalance": Ideogram4EditRebalance,
-    "Ideogram4EncodeRebalance": Ideogram4EncodeRebalance,
-    "ConditioningMerge": ConditioningMerge,
-    "ConditioningMergeMulti": ConditioningMergeMulti,
-    "ConditioningMergeAnchor": ConditioningMergeAnchor,
-    "LoadImages": LoadImages,
-    "Any": Any,
-    "Input": Input,
+    "OmniNode": OmniNode,
 }
-
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "RebalanceGuider": "Rebalance Guider",
-    "StepRebalance": "Step Rebalance",
-    "RebalanceCFG": "Rebalance CFG Custom",
-    "ConditioningKrea2Rebalance": "Conditioning Krea2 Rebalance",
-    "Krea2EditRebalance": "Krea 2 Image Edit Rebalance",
-    "Krea2EncodeRebalance": "Krea 2 Encode Rebalance",
-    "ConditioningIdeogram4Rebalance": "Conditioning Ideogram4 Rebalance",
-    "Ideogram4EditRebalance": "Ideogram 4 Image Edit Rebalance",
-    "Ideogram4EncodeRebalance": "Ideogram 4 Encode Rebalance",
-    "ConditioningMerge": "Conditioning Merge",
-    "ConditioningMergeMulti": "Conditioning Merge (Multi)",
-    "ConditioningMergeAnchor": "Conditioning Merge (Anchor)",
-    "LoadImages": "Load Images",
-    "Any": "Any",
-    "Input": "Input",
+    "OmniNode": "Omni Node",
 }
 
-__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
+for _module in (foundational, resize_toolkit, mask_toolkit,
+                conditioning_rebalance, krea2, ideogram4):
+    NODE_CLASS_MAPPINGS.update(getattr(_module, "NODE_CLASS_MAPPINGS", {}))
+    NODE_DISPLAY_NAME_MAPPINGS.update(getattr(_module, "NODE_DISPLAY_NAME_MAPPINGS", {}))
+
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
+
+WEB_DIRECTORY = "./web"

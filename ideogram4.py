@@ -1,4 +1,3 @@
-"""Ideogram 4 (Qwen3-VL-8B, 13-layer tap) specific conditioning rebalance nodes."""
 
 import torch
 
@@ -20,13 +19,13 @@ except ImportError:
     _COMFY_AVAILABLE = False
 
 
-# 13-layer tap of Qwen3-VL-8B (comfy captures layer inputs, offset by +1).
-IDEOGRAM4_TAP_LAYERS = [1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 34, 36]
-IDEOGRAM4_N_TAPS = len(IDEOGRAM4_TAP_LAYERS)            # 13
-IDEOGRAM4_HIDDEN_DIM = 4096
-IDEOGRAM4_FEATURE_DIM = IDEOGRAM4_N_TAPS * IDEOGRAM4_HIDDEN_DIM   # 53248
 
-# Register the Ideogram 4 profile with the core detection system.
+IDEOGRAM4_TAP_LAYERS = [1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 34, 36]
+IDEOGRAM4_N_TAPS = len(IDEOGRAM4_TAP_LAYERS)            
+IDEOGRAM4_HIDDEN_DIM = 4096
+IDEOGRAM4_FEATURE_DIM = IDEOGRAM4_N_TAPS * IDEOGRAM4_HIDDEN_DIM   
+
+
 core.register_encoder_profile(
     "ideogram4",
     n_taps=IDEOGRAM4_N_TAPS,
@@ -34,7 +33,7 @@ core.register_encoder_profile(
     tap_layers=IDEOGRAM4_TAP_LAYERS,
 )
 
-# Ignored
+
 IDEOGRAM4_SYS_TEMPLATE = (
     "<|im_start|>system\n"
     "Describe the key features of the input image (color, shape, size, texture, "
@@ -54,7 +53,7 @@ def compile_edit_ideogram4(clip, prompt, images_with_size=None):
 
 class ConditioningIdeogram4Rebalance:
 
-    # 13 weights
+    
     DEFAULT_WEIGHTS = "1.0,1.0,1.0,1.0,1.0,0.0,2.25,0.0,2.25,0.5,1.0,1.0,1.0"
 
     @classmethod
@@ -78,7 +77,7 @@ class ConditioningIdeogram4Rebalance:
 
 class Ideogram4EditRebalance:
 
-    # 13 weights
+    
     DEFAULT_MAIN_WEIGHTS = "1.0,1.0,1.0,1.0,1.0,0.0,2.25,0.0,2.25,0.5,1.0,1.0,1.0"
     DEFAULT_REF_WEIGHTS = "1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0"
 
@@ -110,7 +109,6 @@ class Ideogram4EditRebalance:
 
     @staticmethod
     def _batch_len(image):
-        """Return the batch length of an image tensor or list (0 if None)."""
         if image is None:
             return 0
         if isinstance(image, list):
@@ -123,7 +121,6 @@ class Ideogram4EditRebalance:
 
     @staticmethod
     def _slice_image(image, idx):
-        """Return the idx-th frame of an image tensor/list, keeping a batch dim."""
         if image is None:
             return None
         if isinstance(image, list):
@@ -137,7 +134,6 @@ class Ideogram4EditRebalance:
 
     @staticmethod
     def _image_signature(image):
-        """Cheap signature for caching: shape + a few sampled values."""
         if image is None:
             return ("none",)
         if isinstance(image, list):
@@ -149,7 +145,6 @@ class Ideogram4EditRebalance:
 
     @staticmethod
     def _list_index():
-        """Comfy list-map index for this invocation, or None."""
         try:
             from comfy_execution.utils import get_executing_context
             ctx = get_executing_context()

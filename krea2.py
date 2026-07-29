@@ -1,5 +1,3 @@
-"""Krea 2 (Qwen3-VL-4B, 12-layer tap) specific conditioning rebalance nodes."""
-
 import torch
 
 from . import conditioning_rebalance as core
@@ -20,13 +18,13 @@ except ImportError:
     _COMFY_AVAILABLE = False
 
 
-# 12-layer tap of Qwen3-VL-4B (tap k == hidden_states[k], no offset).
-KREA2_TAP_LAYERS = [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35]
-KREA2_N_TAPS = len(KREA2_TAP_LAYERS)          # 12
-KREA2_HIDDEN_DIM = 2560
-KREA2_FEATURE_DIM = KREA2_N_TAPS * KREA2_HIDDEN_DIM   # 30720
 
-# Register the Krea 2 profile with the core detection system.
+KREA2_TAP_LAYERS = [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35]
+KREA2_N_TAPS = len(KREA2_TAP_LAYERS)          
+KREA2_HIDDEN_DIM = 2560
+KREA2_FEATURE_DIM = KREA2_N_TAPS * KREA2_HIDDEN_DIM   
+
+
 core.register_encoder_profile(
     "krea2",
     n_taps=KREA2_N_TAPS,
@@ -34,7 +32,7 @@ core.register_encoder_profile(
     tap_layers=KREA2_TAP_LAYERS,
 )
 
-# System template used by Krea 2 image-edit conditioning.
+
 KREA2_SYS_TEMPLATE = (
     "<|im_start|>system\n"
     "Describe the key features of the input image (color, shape, size, texture, "
@@ -48,12 +46,10 @@ KREA2_SYS_TEMPLATE = (
 
 
 def compile_edit_krea2(clip, prompt, images_with_size=None):
-    """Encode a Krea 2 edit prompt with optional reference images."""
     return compile_edit(clip, prompt, images_with_size, llama_template=KREA2_SYS_TEMPLATE)
 
 
 class ConditioningKrea2Rebalance:
-    """Per-layer conditioning scaler for Krea 2's layout."""
 
     DEFAULT_WEIGHTS = "1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0"
 
@@ -156,10 +152,9 @@ class Krea2EditRebalance:
 
     @staticmethod
     def _batch_len(image):
-        """Return the batch length of an image tensor or list (0 if None)."""
         if image is None:
             return 0
-        # List of image tensors (e.g. from LoadImages output list)
+        
         if isinstance(image, list):
             return len(image)
         if hasattr(image, "shape") and len(image.shape) >= 4:
@@ -170,12 +165,11 @@ class Krea2EditRebalance:
 
     @staticmethod
     def _slice_image(image, idx):
-        """Return the idx-th frame of an image tensor/list, keeping a batch dim."""
         if image is None:
             return None
         if isinstance(image, list):
             item = image[idx]
-            # Ensure a batch dimension
+            
             if hasattr(item, "shape") and len(item.shape) == 3:
                 return item.unsqueeze(0)
             return item
@@ -185,7 +179,6 @@ class Krea2EditRebalance:
 
     @staticmethod
     def _image_signature(image):
-        """Cheap signature for caching: shape + a few sampled values."""
         if image is None:
             return ("none",)
         if isinstance(image, list):
@@ -236,7 +229,7 @@ class Krea2EditRebalance:
             (image4, image4_tokens),
         ]
 
-        # Determine the pass count from the largest image batch.
+        
         max_batch = 0
         for img, _ in image_slots:
             max_batch = max(max_batch, self._batch_len(img))
@@ -245,16 +238,16 @@ class Krea2EditRebalance:
 
         guidance_passes = []
 
-        # Per-pass cache: keyed on a signature of the pass's images + params.
-        # Minor option tweaks reuse cached passes instead of re-encoding.
+        
+        
         cache = getattr(self, "_pass_cache", None)
         if cache is None:
             cache = {}
             self._pass_cache = cache
 
         for p in range(n_passes):
-            # Build per-pass image list: slice any batched input to frame p,
-            # keep single/non-batched inputs as-is.
+            
+            
             pass_images = []
             for img, tier in image_slots:
                 if img is None:
@@ -268,7 +261,7 @@ class Krea2EditRebalance:
 
             has_image = any(img is not None for img, _ in pass_images)
 
-            # Cache key: image signatures + the encode/rebalance params.
+            
             key = (
                 p,
                 tuple(self._image_signature(img) for img, _ in pass_images),
@@ -286,17 +279,17 @@ class Krea2EditRebalance:
             cond_main = compile_edit_krea2(clip, prompt, pass_images if has_image else None)
             cond_ref = compile_edit_krea2(clip, prompt_ref, pass_images if has_image else None)
 
-            # Refocus main and ref with the shared multiplier + fixed layers.
+            
             cond_main = refocus(cond_main, layer_multiplier, self.DEFAULT_MAIN_WEIGHTS)
             cond_ref = refocus(cond_ref, layer_multiplier, self.DEFAULT_REF_WEIGHTS)
 
-            # First guidance for this pass.
+            
             pass_guidance = guidance(cond_main, cond_ref, steering)
             cache[key] = pass_guidance
             guidance_passes.append(pass_guidance)
 
         if not guidance_passes:
-            # Fallback: encode text-only.
+            
             final = compile_edit_krea2(clip, prompt, None)
             return ([final],)
 
@@ -305,11 +298,11 @@ class Krea2EditRebalance:
         elif anchor is not None:
             merged = merge_conditioning_anchor(anchor, guidance_passes, match_percent)
         else:
-            # No anchor supplied: fall back to Conditioning Merge (Multi).
+            
             merged = merge_conditioning_multi(guidance_passes, match_percent)
 
         if enable_step:
-            # Custom Rebalance CFG with fixed schedules.
+            
             cond_raw = compile_edit_krea2(clip, prompt, None)
             merged = core.RebalanceCFG().main(
                 cond_raw, merged,
