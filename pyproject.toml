@@ -1,6 +1,14 @@
 [project]
 name = "Rebalance-Pack"
-description = "Merged ComfyUI custom node pack combining OmniNode (a sole node that lets you paste in the body of a node class, rebuilding its own inputs/outputs to mirror from the source), the Rebalance resize and mask toolkits (ImageResolutionCap, ImageAspectRatioCrop, MaskAspectRatioBBox, UncropImage, UncropMask, BorderMaskDetector), and the Conditioning-Rebalance nodes (RebalanceGuider, StepRebalance, RebalanceCFG, ConditioningMerge variants, Krea 2 and Ideogram 4 rebalance/encode/edit nodes)."
+description = "A set of evolving nodes that balance ComfyUI for the best user experience.
+
+foundational: Omni Node, Input, Load Images, Concatenate (Multi), String (Inline), Any, Switch
+
+utility: Image Resolution Cap, Image Aspect Ratio Crop, Mask Aspect Ratio Crop, Mask Uncrop, Image Uncrop, Border Mask Detector,
+
+conditioning: Conditioning Merge, Conditioning Merge Multi
+
+model specific: Conditioning Krea 2 Rebalance, Krea 2 Edit Rebalance, Krea 2 Encode Rebalance, Conditioning Ideogram 4 Rebalance, Ideogram 4 Edit Rebalance, Ideogram 4 Encode Rebalance"
 version = "2.0.0"
 license = { file = "LICENSE.txt" }
 
@@ -13,5 +21,5 @@ Documentation = "https://github.com/nova452/OmniNode/wiki"
 [tool.comfy]
 PublisherId = "nova452"
 DisplayName = "Rebalance-Pack"
-Icon = ""
+Icon = "avatar.svg"
 includes = []
