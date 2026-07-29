@@ -1,14 +1,15 @@
+# 29/07 Latest Update: OmniNode
+A sole ComfyUI node that lets you paste in the body of a
+node class, rebuilding its own inputs/outputs to mirror the source.
+<img width="2889" height="1521" alt="Screenshot (590)" src="https://github.com/user-attachments/assets/43d362c4-cfa6-42b7-b2a6-3c29ad8a769a" />
 
-# Image Editing with Krea 2 and Ideogram 4 Models
-<img width="2616" height="2463" alt="showcase (1)" src="https://github.com/user-attachments/assets/aae61b58-a0b2-49c3-8718-ec32b0ec180e" />
-
-# 12/07 Latest Update
+# 12/07
 * Supports multi character references for stronger in-context posing
 * New utility nodes added
 
 <img width="2838" height="1387" alt="Screenshot (586)" src="https://github.com/user-attachments/assets/fbc29244-021b-4c7e-90f0-f0138342e15d" />
 
-[workflow.json](https://github.com/nova452/ComfyUI-Conditioning-Rebalance/blob/main/Krea%202%20Edit%20(Full%20Context).json)
+[workflow.json](https://github.com/nova452/Rebalance-Pack/blob/main/workflows/Krea%202%20Edit%20(Full%20Context).json)
 
 # 29/06
 * Clear logic allowing for more complex edits
@@ -16,11 +17,20 @@
 
 <img width="1623" height="1227" alt="Screenshot (563)" src="https://github.com/user-attachments/assets/35ad346b-b4f7-4a83-8181-2891357d5dd0" />
 
-[workflow.json](https://github.com/nova452/ComfyUI-Conditioning-Rebalance/blob/main/krea2_image_edit_workflow%20(3).json)
+[workflow.json](https://github.com/Rebalance-Pack/blob/main/workflows/krea2_image_edit_workflow%20(3).json)
 
-# ComfyUI-Conditioning-Rebalance
-Conditioning optimizer nodes offering IP-Adapter-like features for Krea 2 and Ideogram 4 image reference editing along with other conditioning nodes enhancing the generation experience.
+# Rebalance Pack
+A set of evolving nodes that balance ComfyUI for the best user experience.
+
+
+foundational: Omni Node, Input, Load Images, Concatenate (Multi), String (Inline), Any, Switch
+
+utility: Image Resolution Cap, Image Aspect Ratio Crop, Mask Aspect Ratio Crop, Mask Uncrop, Image Uncrop, Border Mask Detector, 
+
+conditioning: Conditioning Merge, Conditioning Merge Multi
+
+model specific: Conditioning Krea 2 Rebalance, Krea 2 Edit Rebalance, Krea 2 Encode Rebalance, Conditioning Ideogram 4 Rebalance, Ideogram 4 Edit Rebalance, Ideogram 4 Encode Rebalance
 
 ```bash
-git clone https://github.com/nova452/ComfyUI-ConditioningKrea2Rebalance.git
+git clone https://github.com/nova452/Rebalance-Pack.git
 ```
