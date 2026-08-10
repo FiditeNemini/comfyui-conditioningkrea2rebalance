@@ -1,4 +1,4 @@
-# 29/07 Latest Update: OmniNode
+# 29/07 OmniNode
 A sole ComfyUI node that lets you paste in the body of a
 node class, rebuilding its own inputs/outputs to mirror the source.
 <img width="2889" height="1521" alt="627795071-43d362c4-cfa6-42b7-b2a6-3c29ad8a769a" src="https://github.com/user-attachments/assets/2158258c-6b47-491e-b859-886615afb048" />
@@ -18,6 +18,9 @@ node class, rebuilding its own inputs/outputs to mirror the source.
 <img width="1623" height="1227" alt="Screenshot (563)" src="https://github.com/user-attachments/assets/35ad346b-b4f7-4a83-8181-2891357d5dd0" />
 
 [workflow.json](https://github.com/Rebalance-Pack/blob/main/workflows/krea2_image_edit_workflow%20(3).json)
+
+# Image Editing with Krea 2 and Ideogram 4 Models
+<img width="2616" height="2463" alt="showcase (1)" src="https://github.com/user-attachments/assets/aae61b58-a0b2-49c3-8718-ec32b0ec180e" />
 
 # Rebalance Pack
 A set of evolving nodes that streamline the best use practices in ComfyUI.
