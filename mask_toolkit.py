@@ -266,14 +266,59 @@ class BorderMaskDetector:
         return (masks, cropped_image)
 
 
+class MaskOpacity:
+    """
+    opacity = 1.0 keeps the mask unchanged (100% opacity).
+    opacity = 0.0 makes the mask fully transparent (0% opacity).
+    Values in between linearly scale the mask intensity.
+    """
+
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "mask": ("MASK",),
+                "opacity": ("FLOAT", {
+                    "default": 1.0,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.01,
+                    "display": "slider",
+                }),
+            }
+        }
+
+    RETURN_TYPES = ("MASK",)
+    RETURN_NAMES = ("mask",)
+    FUNCTION = "adjust_opacity"
+    CATEGORY = "Rebalance-Pack/mask"
+
+    def adjust_opacity(self, mask, opacity):
+        if mask.dim() == 4:
+            if mask.shape[1] == 1:
+                mask = mask.squeeze(1)
+            elif mask.shape[-1] == 1:
+                mask = mask.squeeze(-1)
+        elif mask.dim() == 2:
+            mask = mask.unsqueeze(0)
+
+        out = mask * float(opacity)
+        return (out,)
+
+
 NODE_CLASS_MAPPINGS = {
     "UncropImage": UncropImage,
     "UncropMask": UncropMask,
     "BorderMaskDetector": BorderMaskDetector,
+    "MaskOpacity": MaskOpacity,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "UncropImage": "Uncrop Image",
     "UncropMask": "Uncrop Mask",
     "BorderMaskDetector": "Border Mask & Crop Detector",
+    "MaskOpacity": "Mask Opacity",
 }

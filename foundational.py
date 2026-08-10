@@ -8,6 +8,7 @@
     Concatenate - Concatenate up to nine string sections into one.
     Switch     - Switch between two wildcard inputs based on a boolean.
     StringInline - Multiline string with {{text_a}}/{{text_b}} substitution.
+    SolidColorImage - Create a blank color image of given dimensions.
 """
 
 import os
@@ -402,8 +403,81 @@ class StringInline:
         return (out,)
 
 
+class SolidColorImage:
+
+    SEARCH_ALIASES = [
+        "solid color",
+        "color image",
+        "blank image",
+        "solid",
+        "fill color",
+        "color fill",
+        "background color",
+    ]
+    ESSENTIALS_CATEGORY = "Image"
+
+    @staticmethod
+    def _parse_color(color):
+        if not isinstance(color, str):
+            color = str(color)
+        color = color.strip().lstrip('#')
+        if len(color) == 3:
+            color = ''.join(c * 2 for c in color)
+        if len(color) != 6:
+            raise ValueError(
+                f"Invalid color '{color}'. Expected #RRGGBB hex format."
+            )
+        try:
+            r = int(color[0:2], 16) / 255.0
+            g = int(color[2:4], 16) / 255.0
+            b = int(color[4:6], 16) / 255.0
+        except ValueError:
+            raise ValueError(
+                f"Invalid color '{color}'. Expected #RRGGBB hex format."
+            )
+        return (r, g, b)
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "width": ("INT", {
+                "default": 1000,
+                "min": 1,
+                "step": 1,
+            }),
+            "height": ("INT", {
+                "default": 1000,
+                "min": 1,
+                "step": 1,
+            }),
+            "color": ("STRING", {
+                "default": "#000000",
+                "multiline": False,
+            }),
+        }}
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "main"
+    CATEGORY = "Rebalance-Pack/foundational"
+
+    def main(self, width, height, color):
+        r, g, b = self._parse_color(color)
+        img_np = np.zeros((height, width, 3), dtype=np.float32)
+        img_np[:, :, 0] = r
+        img_np[:, :, 1] = g
+        img_np[:, :, 2] = b
+        image_tensor = torch.from_numpy(img_np)[None,]
+        return (image_tensor,)
+
+    @classmethod
+    def IS_CHANGED(cls, width, height, color):
+        return f"{width}_{height}_{color}"
+
+
 NODE_CLASS_MAPPINGS = {
     "LoadImages": LoadImages,
+    "SolidColorImage": SolidColorImage,
     "Any": Any,
     "Input": Input,
     "Concatenate": Concatenate,
@@ -413,6 +487,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadImages": "Load Images",
+    "SolidColorImage": "Color Image",
     "Any": "Any",
     "Input": "Input",
     "Concatenate": "Concatenate",
@@ -422,6 +497,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 
 __all__ = [
     "LoadImages",
+    "SolidColorImage",
     "Any",
     "Input",
     "Concatenate",

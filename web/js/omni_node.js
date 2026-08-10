@@ -4,6 +4,10 @@ const { app } = window.comfyAPI.app;
 
 const OMNI_NODE_NAME = "OmniNode";
 
+// Master switch for the OmniNode coloring/animation tweaks.
+// Set to false to completely disable the holo color overlay and animated background.
+const OMNI_COLOR_TWEAKS_ENABLED = true;
+
 function findAssignments(source) {
     const assigns = {};
     const lines = source.split("\n");
@@ -631,12 +635,14 @@ app.registerExtension({
         const origOnNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const r = origOnNodeCreated ? origOnNodeCreated.apply(this, arguments) : undefined;
-            this.color = "#1e1e1f80";
-            this.bgcolor = "#1e1e1f";
-            ensureOmniColorAnimation();
-            makeOmniHolo(this);
-            omniAnimatedNodes.add(this);
-            startOmniColorLoop();
+            if (OMNI_COLOR_TWEAKS_ENABLED) {
+                this.color = "#1e1e1f80";
+                this.bgcolor = "#1e1e1f";
+                ensureOmniColorAnimation();
+                makeOmniHolo(this);
+                omniAnimatedNodes.add(this);
+                startOmniColorLoop();
+            }
             if (this.outputs) {
                 while (this.outputs.length > 0) {
                     this.removeOutput(0);
