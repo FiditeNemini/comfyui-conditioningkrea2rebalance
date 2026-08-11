@@ -17,7 +17,7 @@ Rebalance-Pack - merged ComfyUI custom node package.
 
 """
 
-from .omni_nodes import OmniNode
+from .omni_nodes import OmniNode, OmniNodeGuide, OmniNodeAPI
 from . import foundational
 from . import utilities
 from . import model_toolkit
@@ -29,9 +29,13 @@ from . import ideogram4
 
 NODE_CLASS_MAPPINGS = {
     "OmniNode": OmniNode,
+    "OmniNodeGuide": OmniNodeGuide,
+    "OmniNodeAPI": OmniNodeAPI,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "OmniNode": "Omni Node",
+    "OmniNode": "Omni Node Manual",
+    "OmniNodeGuide": "Omni Node Guide",
+    "OmniNodeAPI": "Omni Node",
 }
 
 for _module in (foundational, utilities, resize_toolkit, mask_toolkit,

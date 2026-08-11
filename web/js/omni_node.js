@@ -2,7 +2,9 @@
 
 const { app } = window.comfyAPI.app;
 
-const OMNI_NODE_NAME = "OmniNode";
+const OMNI_NODE_MANUAL_NAME = "OmniNode";
+const OMNI_NODE_GUIDE_NAME = "OmniNodeGuide";
+const OMNI_NODE_API_NAME = "OmniNodeAPI";
 
 // Master switch for the OmniNode coloring/animation tweaks.
 // Set to false to completely disable the holo color overlay and animated background.
@@ -309,15 +311,60 @@ function restoreConnections(node, snap) {
     }
 }
 
-function rebuildOmniIO(node) {
-    const codeWidget = node.widgets?.find(w => w.name === "code");
-    if (!codeWidget) return;
-    const source = codeWidget.value || "";
+function updateCodeDefault(source, inputName, value) {
+    if (!source || !inputName) return source;
+    const nameRe = new RegExp(
+        "(['\"])" + inputName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\1\\s*:\\s*"
+    );
+    const m = nameRe.exec(source);
+    if (!m) return source;
+    const start = m.index + m[0].length;
+    const open = source[start];
+    if (open !== "(" && open !== "[") return source;
+    const close = open === "(" ? ")" : "]";
+    let depth = 0;
+    let end = -1;
+    for (let i = start; i < source.length; i++) {
+        if (source[i] === open) depth++;
+        else if (source[i] === close) { depth--; if (depth === 0) { end = i; break; } }
+    }
+    if (end === -1) return source;
+    let entry = source.slice(start, end + 1);
+
+    const lit = typeof value === "boolean" ? (value ? "True" : "False")
+        : typeof value === "number" ? String(value)
+        : "'" + String(value).replace(/'/g, "\\'") + "'";
+
+    const defRe = /(["']?)default\1\s*:\s*("[^"]*"|'[^']*'|-?\d+(\.\d+)?|True|False)/;
+    if (defRe.test(entry)) {
+        entry = entry.replace(defRe, '"default": ' + lit);
+    } else if (entry.includes("{")) {
+        entry = entry.replace(/\{/, '{"default": ' + lit + ", ");
+    } else {
+        entry = entry.slice(0, -1) + ', {"default": ' + lit + "}" + entry.slice(-1);
+    }
+    return source.slice(0, start) + entry + source.slice(end + 1);
+}
+
+function rebuildOmniIO(node, opts) {
+    opts = opts || {};
+    const codeWidgetName = opts.codeWidgetName || "code";
+    const buttonName = opts.buttonName || "Update";
+    const keepStaticInputs = opts.keepStaticInputs || [codeWidgetName, "omni_spec"];
+    const keepStaticWidgets = opts.keepStaticWidgets || [codeWidgetName, "omni_spec", buttonName];
+
+    const codeWidget = node.widgets?.find(w => w.name === codeWidgetName);
+    let source = "";
+    if (codeWidget) {
+        source = codeWidget.value || "";
+    } else if (opts.getSource) {
+        source = opts.getSource() || "";
+    }
     const spec = parseOmniSource(source);
 
     const snap = snapshotConnections(node);
 
-    const staticWidgetNames = new Set(["code", "omni_spec", "Update"]);
+    const staticWidgetNames = new Set(keepStaticWidgets);
     const prevWidgetValues = {};
     if (node.widgets) {
         for (const w of node.widgets) {
@@ -327,7 +374,7 @@ function rebuildOmniIO(node) {
         }
     }
 
-    const staticInputNames = new Set(["code", "omni_spec"]);
+    const staticInputNames = new Set(keepStaticInputs);
     if (node.inputs) {
         for (let i = node.inputs.length - 1; i >= 0; i--) {
             const inp = node.inputs[i];
@@ -337,7 +384,7 @@ function rebuildOmniIO(node) {
         }
     }
     if (node.widgets) {
-        node.widgets = node.widgets.filter(w => w.name === "code" || w.name === "Update");
+        node.widgets = node.widgets.filter(w => keepStaticWidgets.includes(w.name));
     }
     const WIDGET_TYPES = new Set(["INT", "FLOAT", "STRING", "BOOLEAN"]);
     const addFromSection = (section, isOptional) => {
@@ -393,8 +440,20 @@ function rebuildOmniIO(node) {
 
     if (node.widgets) {
         for (const w of node.widgets) {
-            if (w.name && w.name in prevWidgetValues) {
-                w.value = prevWidgetValues[w.name];
+            if (w.name && !staticWidgetNames.has(w.name)) {
+                if (w.name in prevWidgetValues) {
+                    w.value = prevWidgetValues[w.name];
+                }
+                // Persist edits into the code widget's defaults so they
+                // survive undo/redo and browser refresh.
+                const origCb = w.callback;
+                w.callback = function () {
+                    const cw = node.widgets?.find(x => x.name === codeWidgetName);
+                    if (cw && typeof cw.value === "string" && cw.value) {
+                        cw.value = updateCodeDefault(cw.value, w.name, w.value);
+                    }
+                    if (origCb) return origCb.apply(this, arguments);
+                };
             }
         }
     }
@@ -616,6 +675,18 @@ function startOmniColorLoop() {
     requestAnimationFrame(loop);
 }
 
+function shrinkOmniNode(node) {
+    if (typeof node.computeSize !== "function") return;
+    const apply = () => {
+
+        if (node._omniConfigured) return;
+        const sz = node.computeSize();
+        node.setSize([sz[0], sz[1]]);
+    };
+    apply();
+    requestAnimationFrame(apply);
+}
+
 function makeOmniHolo(node) {
     if (node[OMNI_HOLO_FLAG]) return;
     node[OMNI_HOLO_FLAG] = true;
@@ -627,10 +698,116 @@ function makeOmniHolo(node) {
     };
 }
 
+
+
+// Omni Node: "Build"
+const OMNI_BUILD_BUTTON_NAME = "Build";
+
+function getOmniNodeId(node) {
+
+    return node.id != null ? String(node.id) : "";
+}
+
+function setOmniCodeWidgetValue(node, code) {
+    if (!node.widgets) return;
+    let w = node.widgets.find(x => x.name === "omni_code");
+    if (!w) {
+
+        w = node.addWidget("text", "omni_code", "", () => {}, {});
+        if (w) {
+            w.type = "hidden";
+            w.hidden = true;
+            w.computeSize = () => [0, -4];
+        }
+    }
+    if (w) w.value = code;
+}
+
+function getOmniCodeWidgetValue(node) {
+    if (!node.widgets) return "";
+    const w = node.widgets.find(x => x.name === "omni_code");
+    return w ? (w.value || "") : "";
+}
+
+const OMNI_API_KEEP_INPUTS = ["prompt", "omni_code"];
+const OMNI_API_KEEP_WIDGETS = ["prompt", "omni_code", OMNI_BUILD_BUTTON_NAME];
+
+function omniApiRebuildOpts(code) {
+    return {
+        codeWidgetName: "omni_code",
+        buttonName: OMNI_BUILD_BUTTON_NAME,
+        keepStaticInputs: OMNI_API_KEEP_INPUTS,
+        keepStaticWidgets: OMNI_API_KEEP_WIDGETS,
+        getSource: () => code,
+    };
+}
+
+async function omniBuildRequest(node) {
+    const nodeId = getOmniNodeId(node);
+    if (!nodeId) {
+        console.warn("[OmniNodeAPI] Build: node has no id yet.");
+        return;
+    }
+
+    const getVal = (name) => {
+        if (!node.widgets) return undefined;
+        const w = node.widgets.find(x => x.name === name);
+        return w ? w.value : undefined;
+    };
+
+    const userPrompt = getVal("prompt") || "";
+
+    let promptJson = null;
+    try {
+        promptJson = await app.graphToPrompt?.();
+    } catch (e) {
+        console.warn("[OmniNodeAPI] graphToPrompt failed:", e);
+    }
+
+    const body = {
+        node_id: nodeId,
+        user_prompt: userPrompt,
+        prompt: promptJson,
+    };
+
+    const btn = node.widgets?.find(w => w.name === OMNI_BUILD_BUTTON_NAME);
+    const origLabel = btn ? (btn.label || OMNI_BUILD_BUTTON_NAME) : OMNI_BUILD_BUTTON_NAME;
+    if (btn) { btn.disabled = true; btn.label = "Building..."; }
+    node.setDirtyCanvas(true, true);
+
+    try {
+        const resp = await fetch("/rebalance_pack/omni_build", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            const msg = data.error || `HTTP ${resp.status}`;
+            console.error("[OmniNode] Build failed:", msg);
+            if (btn) btn.label = "Build failed";
+            return;
+        }
+        const code = data.code || "";
+        setOmniCodeWidgetValue(node, code);
+        rebuildOmniIO(node, omniApiRebuildOpts(code));
+        if (btn) btn.label = "Built ✓";
+    } catch (e) {
+        console.error("[OmniNode] Build request error:", e);
+        if (btn) btn.label = "Build error";
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            setTimeout(() => { btn.label = origLabel; node.setDirtyCanvas(true, true); }, 1200);
+        }
+        node.setDirtyCanvas(true, true);
+    }
+}
+
 app.registerExtension({
-    name: "ComfyUI-OmniNode",
+    name: "ComfyUI-OmniNode-Manual",
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
-        if (nodeData?.name !== OMNI_NODE_NAME) return;
+        if (nodeData?.name !== OMNI_NODE_MANUAL_NAME) return;
 
         const origOnNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
@@ -654,14 +831,132 @@ app.registerExtension({
             this.addWidget("button", "Update", null, () => {
                 rebuildOmniIO(this);
             });
+
+            shrinkOmniNode(this);
             return r;
         };
 
         const origOnConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function (info) {
+            this._omniConfigured = true;
             const r = origOnConfigure ? origOnConfigure.apply(this, arguments) : undefined;
             setTimeout(() => rebuildOmniIO(this), 0);
             return r;
         };
     },
 });
+
+app.registerExtension({
+    name: "ComfyUI-OmniNode-Guide",
+    async beforeRegisterNodeDef(nodeType, nodeData, app) {
+        if (nodeData?.name !== OMNI_NODE_GUIDE_NAME) return;
+
+        const origOnNodeCreated = nodeType.prototype.onNodeCreated;
+        nodeType.prototype.onNodeCreated = function () {
+            const r = origOnNodeCreated ? origOnNodeCreated.apply(this, arguments) : undefined;
+            if (OMNI_COLOR_TWEAKS_ENABLED) {
+                this.color = "#1e1e1f80";
+                this.bgcolor = "#1e1e1f";
+                ensureOmniColorAnimation();
+                makeOmniHolo(this);
+                omniAnimatedNodes.add(this);
+                startOmniColorLoop();
+            }
+
+            if (this.inputs) {
+                for (const inp of this.inputs) {
+                    if (inp && inp.name === "system_prompt") {
+                        inp.label = "System Override";
+                    }
+                }
+            }
+            return r;
+        };
+
+        const origOnConfigure = nodeType.prototype.onConfigure;
+        nodeType.prototype.onConfigure = function (info) {
+            const r = origOnConfigure ? origOnConfigure.apply(this, arguments) : undefined;
+            if (this.inputs) {
+                for (const inp of this.inputs) {
+                    if (inp && inp.name === "system_prompt") {
+                        inp.label = "System Override";
+                    }
+                }
+            }
+            return r;
+        };
+    },
+});
+
+app.registerExtension({
+    name: "ComfyUI-OmniNodeAPI",
+    async beforeRegisterNodeDef(nodeType, nodeData, app) {
+        if (nodeData?.name !== OMNI_NODE_API_NAME) return;
+
+        const origOnNodeCreated = nodeType.prototype.onNodeCreated;
+        nodeType.prototype.onNodeCreated = function () {
+            const r = origOnNodeCreated ? origOnNodeCreated.apply(this, arguments) : undefined;
+            if (OMNI_COLOR_TWEAKS_ENABLED) {
+                this.color = "#1e1e1f80";
+                this.bgcolor = "#1e1e1f";
+                ensureOmniColorAnimation();
+                makeOmniHolo(this);
+                omniAnimatedNodes.add(this);
+                startOmniColorLoop();
+            }
+            if (this.outputs) {
+                while (this.outputs.length > 0) {
+                    this.removeOutput(0);
+                }
+            }
+            // Storage widget for generated code (hidden, serialized into prompt).
+            if (!this.widgets?.find(w => w.name === "omni_code")) {
+                const w = this.addWidget("text", "omni_code", "", () => {}, {});
+                if (w) {
+                    w.type = "hidden";
+                    w.hidden = true;
+                    w.computeSize = () => [0, -4];
+                }
+            }
+            this.addWidget("button", OMNI_BUILD_BUTTON_NAME, null, () => {
+                omniBuildRequest(this);
+            });
+
+            shrinkOmniNode(this);
+            return r;
+        };
+
+        const origOnConfigure = nodeType.prototype.onConfigure;
+        nodeType.prototype.onConfigure = function (info) {
+            this._omniConfigured = true;
+            const r = origOnConfigure ? origOnConfigure.apply(this, arguments) : undefined;
+            setTimeout(() => {
+                const code = getOmniCodeWidgetValue(this);
+                if (code) {
+                    rebuildOmniIO(this, omniApiRebuildOpts(code));
+                }
+            }, 0);
+            return r;
+        };
+    },
+});
+
+try {
+    const origOn = app.api?.addEventListener;
+    if (typeof window !== "undefined" && window.comfyAPI?.api?.api) {
+        window.comfyAPI.api.api.addEventListener("rebalance_omni_built", (e) => {
+            const detail = e?.detail || {};
+            const nodeId = String(detail.node_id || "");
+            const code = detail.code || "";
+            if (!nodeId || !code) return;
+            const graph = app.graph;
+            if (!graph) return;
+            const node = graph.getNodeById?.(nodeId) || graph.getNodeById?.(Number(nodeId));
+            if (!node || node.type !== OMNI_NODE_API_NAME) return;
+            setOmniCodeWidgetValue(node, code);
+            rebuildOmniIO(node, omniApiRebuildOpts(code));
+        });
+    }
+} catch (e) {
+    console.warn("[OmniNode] websocket listener setup failed:", e);
+}

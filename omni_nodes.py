@@ -368,9 +368,6 @@ class OmniNode:
     RETURN_NAMES = tuple(f"output_{i + 1}" for i in range(24))
     FUNCTION = "execute"
     CATEGORY = "Rebalance-Pack/foundational"
-    DESCRIPTION = (
-        "Paste any ComfyUI node class source into the 'code' widget and press Update."
-    )
     OUTPUT_IS_LIST = tuple(False for _ in range(24))
 
     @classmethod
@@ -450,3 +447,456 @@ def _normalize_result(result: Any, spec: OmniSpec) -> Tuple[Any, ...]:
     elif len(vals) > n:
         vals = vals[:n]
     return tuple(vals)
+
+
+# Omni Node Guide
+
+import json as _json
+import os as _os
+import random as _random
+import threading as _threading
+
+try:
+    import requests as _requests
+except ImportError:  # pragma: no cover
+    _requests = None
+
+
+_OMNI_GUIDE_SYSTEM_PROMPT_CACHE: Dict[str, str] = {"text": "", "mtime": 0.0}
+
+
+def _omni_guide_system_prompt_path() -> str:
+    here = _os.path.dirname(_os.path.abspath(__file__))
+    return _os.path.join(here, "workflows", "omni_node_system_prompt.txt")
+
+
+def _load_omni_guide_system_prompt() -> str:
+    path = _omni_guide_system_prompt_path()
+    try:
+        st = _os.stat(path)
+    except OSError:
+        return _OMNI_GUIDE_SYSTEM_PROMPT_CACHE["text"] or ""
+    mtime = st.st_mtime
+    if _OMNI_GUIDE_SYSTEM_PROMPT_CACHE["mtime"] == mtime and _OMNI_GUIDE_SYSTEM_PROMPT_CACHE["text"]:
+        return _OMNI_GUIDE_SYSTEM_PROMPT_CACHE["text"]
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return _OMNI_GUIDE_SYSTEM_PROMPT_CACHE["text"] or ""
+    _OMNI_GUIDE_SYSTEM_PROMPT_CACHE["text"] = text
+    _OMNI_GUIDE_SYSTEM_PROMPT_CACHE["mtime"] = mtime
+    return text
+
+
+def _call_openrouter(
+    system_prompt: str,
+    user_prompt: str,
+    api_key: str,
+    model: str,
+    reasoning_effort: str,
+    service_tier: str,
+    seed: int,
+    temperature: float = 1.0,
+    timeout: int = 180,
+) -> Dict[str, Any]:
+    """Call OpenRouter chat completions and return the parsed JSON response.
+
+    Mirrors the request shape used by ComfyUI-OpenRouter-Node, including the
+    HTTP-Referer / X-Title headers and Connection: close session tweak that
+    avoid ConnectionResetError 10054 from OpenRouter.
+    """
+    if _requests is None:
+        raise RuntimeError("OmniNode: 'requests' package is required for OpenRouter calls.")
+    if not api_key or not api_key.startswith("sk-or-"):
+        raise RuntimeError(
+            "OmniNode: a valid OpenRouter API key is required. Add an "
+            "OmniNodeGuide node to the graph and set its api_key."
+        )
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/nova452/OmniNode",
+        "X-Title": "ComfyUI Rebalance-Pack Omni Node",
+        "User-Agent": "ComfyUI-Rebalance-Pack-OmniNode/1.0",
+    }
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "seed": seed & 0x7FFFFFFF,
+    }
+    if reasoning_effort and reasoning_effort != "none":
+        payload["reasoning"] = {"effort": reasoning_effort}
+    if service_tier and service_tier != "default":
+        payload["service_tier"] = service_tier
+
+    with _requests.Session() as session:
+        session.headers.update({"Connection": "close"})
+        response = session.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+def _extract_content(result_json: Dict[str, Any]) -> str:
+    try:
+        return result_json["choices"][0]["message"].get("content", "") or ""
+    except (KeyError, IndexError, TypeError):
+        return ""
+
+
+_OMNI_GENERATED_CODE: Dict[str, str] = {}
+_OMNI_CODE_LOCK = _threading.Lock()
+
+
+def _set_generated_code(node_id: str, code: str) -> None:
+    with _OMNI_CODE_LOCK:
+        _OMNI_GENERATED_CODE[str(node_id)] = code
+
+
+def _get_generated_code(node_id: str) -> str:
+    with _OMNI_CODE_LOCK:
+        return _OMNI_GENERATED_CODE.get(str(node_id), "")
+
+
+# Server routes
+
+def _register_omni_build_route() -> None:
+    try:
+        from server import PromptServer
+        from aiohttp import web
+    except ImportError:
+        return
+
+    server = PromptServer.instance
+    if getattr(server, "_rebalance_omni_build_route_registered", False):
+        return
+    server._rebalance_omni_build_route_registered = True
+
+    routes = web.RouteTableDef()
+
+    @routes.post("/rebalance_pack/omni_build")
+    async def _omni_build(request):
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body."}, status=400)
+
+        node_id = str(body.get("node_id", ""))
+        user_prompt = str(body.get("user_prompt", ""))
+
+        if not node_id:
+            return web.json_response({"error": "Missing node_id."}, status=400)
+        if not user_prompt.strip():
+            return web.json_response({"error": "Missing user_prompt."}, status=400)
+
+
+        api_key = ""
+        model = "openai/gpt-5.6-luna"
+        reasoning_effort = "none"
+        service_tier = "default"
+        system_prompt = ""
+
+        prompt_json = body.get("prompt")
+        # graphToPrompt() returns {output: {...}, workflow: {...}}; the node
+        # data lives under the "output" key. Fall back to the top-level dict
+        # for older formats or direct node dicts.
+        if isinstance(prompt_json, dict) and isinstance(prompt_json.get("output"), dict):
+            prompt_json = prompt_json["output"]
+        if isinstance(prompt_json, dict):
+            for nid, ndata in prompt_json.items():
+                if not isinstance(ndata, dict):
+                    continue
+                if ndata.get("class_type") != "OmniNodeGuide":
+                    continue
+                ginputs = ndata.get("inputs", {})
+                if not isinstance(ginputs, dict):
+                    continue
+                api_key = str(ginputs.get("api_key", "") or "")
+                model = str(ginputs.get("model", model) or model)
+                reasoning_effort = str(ginputs.get("reasoning_effort", reasoning_effort) or reasoning_effort)
+                service_tier = str(ginputs.get("service_tier", service_tier) or service_tier)
+                sp = ginputs.get("system_prompt")
+                if isinstance(sp, str):
+                    system_prompt = sp
+                break
+
+        if not system_prompt.strip():
+            system_prompt = _load_omni_guide_system_prompt()
+
+        seed = body.get("seed", None)
+        if seed is None:
+            seed = _random.randint(0, 0x7FFFFFFF)
+        else:
+            try:
+                seed = int(seed) & 0x7FFFFFFF
+            except (TypeError, ValueError):
+                seed = _random.randint(0, 0x7FFFFFFF)
+
+        try:
+            result_json = _call_openrouter(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                api_key=api_key,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                service_tier=service_tier,
+                seed=seed,
+            )
+        except Exception as e:
+            logger.exception("OmniNodeAPI: OpenRouter call failed")
+            return web.json_response({"error": f"OpenRouter request failed: {e}"}, status=502)
+
+        code = _extract_content(result_json)
+        if not code:
+            return web.json_response({"error": "Empty response from model."}, status=502)
+
+        code = _strip_code_fences(code)
+        _set_generated_code(node_id, code)
+
+        try:
+            PromptServer.instance.send_sync("rebalance_omni_built", {
+                "node_id": node_id,
+                "code": code,
+                "seed": seed,
+            })
+        except Exception:
+            pass
+
+        return web.json_response({"code": code, "seed": seed})
+
+    if not server.app.router.frozen:
+        try:
+            server.app.add_routes(routes)
+        except Exception:
+            logger.exception("Rebalance-Pack: failed to register /rebalance_pack/omni_build route")
+
+
+def _strip_code_fences(text: str) -> str:
+
+    import re as _re
+    s = text.strip()
+
+    m = _re.search(r"```[a-zA-Z0-9_+-]*\n(.*?)```", s, _re.DOTALL)
+    if m:
+        return m.group(1).strip()
+
+    if not s.startswith("```"):
+        return s
+    nl = s.find("\n")
+    if nl == -1:
+        return s
+    s = s[nl + 1:]
+    if s.rstrip().endswith("```"):
+        s = s.rstrip()
+        s = s[:-3]
+    return s.strip()
+
+
+_register_omni_build_route()
+
+
+class OmniNodeGuide:
+
+    @classmethod
+    def INPUT_TYPES(cls) -> Dict[str, Dict[str, Any]]:
+        return {
+            "required": {
+                "api_key": ("STRING", {
+                    "default": "sk-or-v1-...",
+                    "multiline": False,
+                    "tooltip": "Supported: OpenRouter",
+                }),
+                "model": ("STRING", {
+                    "default": "openai/gpt-5.6-luna",
+                }),
+                "reasoning_effort": (["none", "minimal", "low", "medium", "high", "xhigh"], {
+                    "default": "none",
+                }),
+                "service_tier": (["default", "flex", "priority"], {
+                    "default": "default",
+                }),
+            },
+            "optional": {
+                "system_prompt": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "forceInput": True,
+                }),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+                "prompt": "PROMPT",
+            },
+        }
+
+    RETURN_TYPES: Tuple[Any, ...] = ()
+    RETURN_NAMES: Tuple[str, ...] = ()
+    FUNCTION = "execute"
+    CATEGORY = "Rebalance-Pack/foundational"
+    OUTPUT_IS_LIST: Tuple[bool, ...] = ()
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, **kwargs) -> bool:
+        return True
+
+    def execute(self, api_key: str, model: str,
+                reasoning_effort: str, service_tier: str,
+                system_prompt: str = "", unique_id=None, prompt=None, **kwargs) -> Tuple[Any, ...]:
+        if isinstance(unique_id, list) and unique_id:
+            unique_id = unique_id[0]
+        node_id = str(unique_id) if unique_id is not None else ""
+
+        if not system_prompt or not system_prompt.strip():
+            system_prompt = _load_omni_guide_system_prompt()
+
+        user_prompt = ""
+        or_node_id = ""
+        if isinstance(prompt, dict):
+            for nid, ndata in prompt.items():
+                if not isinstance(ndata, dict):
+                    continue
+                if ndata.get("class_type") != "OmniNodeAPI":
+                    continue
+                ninputs = ndata.get("inputs", {})
+                if not isinstance(ninputs, dict):
+                    continue
+                up = ninputs.get("prompt")
+                if isinstance(up, str) and up.strip():
+                    user_prompt = up
+                    or_node_id = nid
+                    break
+
+        if not user_prompt.strip():
+            raise RuntimeError(
+                "OmniNodeGuide: no prompt found. Add an OmniNodeAPI node "
+                "to the graph and enter a prompt."
+            )
+
+        seed = _random.randint(0, 0x7FFFFFFF)
+
+        result_json = _call_openrouter(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            api_key=api_key,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
+            seed=seed,
+        )
+        code = _strip_code_fences(_extract_content(result_json))
+        if not code:
+            raise RuntimeError("OmniNodeGuide: model returned empty content.")
+
+
+        _set_generated_code(or_node_id or node_id, code)
+
+        try:
+            from server import PromptServer
+            PromptServer.instance.send_sync("rebalance_omni_built", {
+                "node_id": or_node_id or node_id,
+                "code": code,
+                "seed": seed,
+            })
+        except Exception:
+            pass
+
+        return ()
+
+
+class OmniNodeAPI:
+    """Omni Node (OpenRouter)."""
+
+    @classmethod
+    def INPUT_TYPES(cls) -> Dict[str, Dict[str, Any]]:
+        return {
+            "required": {
+                "prompt": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                }),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+                "extra_prompt": "PROMPT",
+                "omni_code": "STRING",
+            },
+        }
+
+    _WILDCARD_OUT = tuple("*" for _ in range(24))
+    RETURN_TYPES = _WILDCARD_OUT
+    RETURN_NAMES = tuple(f"output_{i + 1}" for i in range(24))
+    FUNCTION = "execute"
+    CATEGORY = "Rebalance-Pack/foundational"
+    OUTPUT_IS_LIST = tuple(False for _ in range(24))
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, **kwargs) -> bool:
+        return True
+
+    def execute(self, prompt: str = "",
+                unique_id=None, extra_prompt=None,
+                omni_code=None, **kwargs) -> Tuple[Any, ...]:
+        if isinstance(unique_id, list) and unique_id:
+            unique_id = unique_id[0]
+        node_id = str(unique_id) if unique_id is not None else ""
+
+
+        code = _get_generated_code(node_id)
+        if not code and omni_code:
+            if isinstance(omni_code, list) and omni_code:
+                omni_code = omni_code[0]
+            code = omni_code or ""
+
+        cls_gen, spec = compile_omni_class(code or "")
+        if cls_gen is None or spec.error:
+            raise RuntimeError(f"OmniNodeAPI: {spec.error or 'no generated code yet — press Build.'}")
+
+        func_name = spec.function or "execute"
+        func = getattr(cls_gen(), func_name, None)
+        if func is None:
+            raise RuntimeError(
+                f"OmniNodeAPI: generated class {spec.class_name!r} has no function "
+                f"{func_name!r}."
+            )
+
+        declared = set(spec.required.keys()) | set(spec.optional.keys())
+        call_kwargs: Dict[str, Any] = {}
+
+        for k, v in kwargs.items():
+            if k in declared:
+                call_kwargs[k] = v
+
+        if extra_prompt and node_id:
+            node_inputs = None
+            try:
+                node_inputs = extra_prompt[node_id]["inputs"]
+            except (KeyError, TypeError):
+                node_inputs = None
+            if isinstance(node_inputs, dict):
+                for name in declared:
+                    if name in call_kwargs:
+                        continue
+                    if name not in node_inputs:
+                        continue
+                    val = node_inputs[name]
+                    if isinstance(val, list) and len(val) == 2 and all(isinstance(x, (int, str)) for x in val):
+                        continue
+                    if isinstance(val, dict) and "__value__" in val:
+                        val = val["__value__"]
+                    call_kwargs[name] = val
+
+        result = func(**call_kwargs)
+        return _normalize_result(result, spec)
