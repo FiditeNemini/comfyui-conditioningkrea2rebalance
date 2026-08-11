@@ -1,3 +1,9 @@
+# 10/08 Latest Update: Prompt-based Omni Node in ComfyUI
+* Omni Node family extended
+* New core utility nodes
+<img width="2321" height="1102" alt="Screenshot (9)" src="https://github.com/user-attachments/assets/cea89d2f-12d1-4a66-81b2-70075102fb0f" />
+
+
 # 29/07 OmniNode
 A sole ComfyUI node that lets you paste in the body of a
 node class, rebuilding its own inputs/outputs to mirror the source.
