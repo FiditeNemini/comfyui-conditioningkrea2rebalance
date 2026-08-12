@@ -1,7 +1,8 @@
+
 # 10/08 Latest Update: Prompt-based Omni Node in ComfyUI
 * Omni Node family extended
 * New core utility nodes
-<img width="2321" height="1102" alt="Screenshot (9)" src="https://github.com/user-attachments/assets/cea89d2f-12d1-4a66-81b2-70075102fb0f" />
+<img width="2254" height="1176" alt="Screenshot (10)" src="https://github.com/user-attachments/assets/e01edd61-c064-42f2-81e7-a6463d8447f3" />
 
 
 # 29/07 OmniNode
